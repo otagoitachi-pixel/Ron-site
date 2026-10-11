@@ -1,0 +1,7 @@
+_worker.js
+wrangler.jsonc
+package.json
+package-lock.json
+schema.sql
+.assetsignore
+.gitignore
