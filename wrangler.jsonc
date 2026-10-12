@@ -1,35 +1,13 @@
 {
-<<<<<<< HEAD
-  "name": "ron-site",
-  "main": "_worker.js",
-  "compatibility_date": "2026-10-11",
-  "keep_vars": true,
-  "workers_dev": false,
-  "preview_urls": false,
-  "observability": { "enabled": false },
-  "assets": { "directory": ".", "binding": "ASSETS" },
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "ron-collection-db",
-    "database_id": "ff1b0fe5-a4bc-40ec-b411-85518b407060"
-  }]
-=======
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ron-site",
   "main": "_worker.js",
   "compatibility_date": "2026-10-11",
-
-  // Keep ADMIN_PASSWORD (and any other variable/secret) that already exists in the dashboard
   "keep_vars": true,
-
-  // Match the existing remote settings so deploying changes nothing else
   "workers_dev": false,
   "preview_urls": false,
   "observability": { "enabled": false },
-
-  // Static website files. Private files are excluded by the .assetsignore file.
   "assets": { "directory": ".", "binding": "ASSETS" },
-
   "d1_databases": [
     {
       "binding": "DB",
@@ -37,9 +15,4 @@
       "database_id": "ff1b0fe5-a4bc-40ec-b411-85518b407060"
     }
   ]
-
-  // Media files are stored in Supabase Storage. Add these in the Cloudflare dashboard
-  // (Settings > Variables and Secrets): SUPABASE_URL (text), SUPABASE_SERVICE_KEY (Secret),
-  // optional SUPABASE_BUCKET (text, default ron-media). Do not put them in this file.
->>>>>>> d67ece0 (Store media in Supabase)
 }
