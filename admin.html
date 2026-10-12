@@ -9,12 +9,30 @@ label{font-size:13px;color:#6d665a}button{background:#17130e;color:#fff;border:0
 .m b{position:absolute;top:3px;right:3px;background:#fff;color:#000;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;cursor:pointer}.m small{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.65);color:#fff;font-size:10px;text-align:center}
 .it{display:flex;gap:10px;align-items:center;background:#fff;border:1px solid #d8cbb0;border-radius:12px;padding:10px;margin-bottom:8px}.it img{width:54px;height:54px;object-fit:cover;border-radius:8px;background:#eadfca}.it div{flex:1;min-width:0}.it button{width:auto;padding:8px 12px;margin:0}
 .save{position:fixed;left:0;right:0;bottom:0;background:#f4ede0;border-top:1px solid #d8cbb0;padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));display:flex;gap:10px}.save button{margin:0}
+.box{background:#fff;border:1px solid #d8cbb0;border-radius:12px;padding:14px;margin:0 0 12px}.bad{color:#b3261e;font-size:14px}.ok{color:#1f7a47;font-size:13px}#ist div{font-size:14px;padding:2px 0}
+.ii{display:flex;gap:10px;background:#fff;border:1px solid #d8cbb0;border-radius:12px;padding:8px;margin-bottom:8px}.ii img{width:88px;height:88px;object-fit:cover;border-radius:8px;background:#eadfca;flex:none}.im{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}.im small{color:#6d665a;font-size:12px}.mv{display:flex;gap:6px}.mv button{width:auto;padding:6px 12px;margin:0}
+.vv{background:#fff;border:1px solid #d8cbb0;border-radius:12px;padding:10px;margin-bottom:8px}.vv video{width:100%;max-height:260px;border-radius:8px;background:#000;margin-top:6px}
 #msg{position:fixed;left:16px;right:16px;bottom:80px;background:#17130e;color:#fff;padding:12px;border-radius:10px;display:none;text-align:center;z-index:5}
 </style></head><body>
 <h1>RON COLLECTION · ADMIN</h1>
 <div id="login"><label>Admin password</label><input id="pw" type="password" autocomplete="current-password"><button onclick="enter(pw.value)">Login</button><p id="lerr" style="color:#b3261e"></p></div>
 <div id="app" hidden>
-<h2 id="ft" style="margin-top:0">Add a watch</h2>
+<div class="box" id="imp"><h2 style="margin-top:0">Import Product by URL</h2>
+<label>Product page URL</label><input id="iu" type="url" inputmode="url" placeholder="https://…">
+<button class="g" id="ib" onclick="impGo()">Import Product</button><div id="ist"></div>
+<div id="ipv" hidden>
+<div class="box" id="isrc"></div>
+<div class="row"><div><label>Product name *</label><input id="iname"></div><div><label>Category *</label><select id="icat"><option>Men's Watches</option><option>Women's Watches</option><option>Digital Watches</option><option>Luxury Watches</option></select></div></div>
+<div class="row"><div><label>Brand</label><input id="ibrand"></div><div><label>Model / SKU</label><input id="isku"></div></div>
+<div class="row"><div><label>Your selling price ₹ *</label><input id="iprice" type="number" inputmode="numeric"></div><div><label>Original price ₹ (optional)</label><input id="iorig" type="number" inputmode="numeric"></div></div>
+<label class="chk"><input id="inew" type="checkbox"> Show in New Arrivals</label><br>
+<label>Description</label><textarea id="idesc" rows="5"></textarea>
+<label>Specifications (one per line, like  Strap: Leather)</label><textarea id="ispecs" rows="4"></textarea>
+<label>Photos — tick the ones to use, ▲▼ to reorder (first ticked = main photo)</label><div id="iimgs"></div>
+<label>Video</label><div id="ivid"></div>
+<div class="row"><button class="l" onclick="impCancel()">Cancel</button><button class="g" id="ipub" onclick="impPublish()">Publish Product</button></div>
+</div></div>
+<h2 id="ft">Add a watch</h2>
 <div class="row"><div><label>Product ID *</label><input id="id"></div><div><label>Category *</label><select id="cat"><option>Men's Watches</option><option>Women's Watches</option><option>Digital Watches</option><option>Luxury Watches</option></select></div></div>
 <label>Watch name *</label><input id="name">
 <div class="row"><div><label>Price ₹ *</label><input id="price" type="number" inputmode="numeric"></div><div><label>Original price ₹ (optional)</label><input id="orig" type="number" inputmode="numeric"></div></div>
@@ -37,7 +55,7 @@ const api=(u,o={})=>fetch(u,{...o,headers:{...(o.headers||{}),"x-admin-password"
 async function enter(p){PW=p;const r=await api("/api/check").catch(()=>({ok:false}));if(r.ok){sessionStorage.pw=PW;$("#login").hidden=true;$("#app").hidden=false;$("#bar").hidden=false;await load();reset()}else $("#lerr").textContent="Wrong password, or the admin is not set up yet"}
 if(PW)enter(PW);
 async function load(){const r=await fetch("/api/products",{cache:"no-store"});items=r.ok?await r.json():[];
-$("#list").innerHTML=(items.length?"":`<p>No watches in the admin yet.</p><button class="g" onclick="seed()">Import my first watch (${SEED.name})</button>`)+items.map(p=>`<div class="it"><img src="${p.image||p.poster||""}" alt=""><div><b>${p.name}</b><br><small>${p.id} · ₹${p.price}</small></div><button class="l" onclick="edit('${p.id}')">Edit</button><button class="r" onclick="del('${p.id}')">Delete</button></div>`).join("")}
+$("#list").innerHTML=(items.length?"":`<p>No watches in the admin yet.</p><button class="g" onclick="seed()">Import my first watch (${SEED.name})</button>`)+items.map(p=>`<div class="it"><img src="${E(p.image||p.poster||"")}" alt=""><div><b>${E(p.name)}</b><br><small>${E(p.id)} · ₹${E(p.price)}</small></div><button class="l" onclick="edit('${E(p.id)}')">Edit</button><button class="r" onclick="del('${E(p.id)}')">Delete</button></div>`).join("")}
 async function seed(){const r=await api("/api/products",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(SEED)});if(r.ok){say("Imported ✔");await load();reset()}else say("Could not import")}
 function drawMedia(){$("#media").innerHTML=cur.images.map((u,i)=>`<div class="m ${i?"":"main"}" onclick="mk(${i})"><img src="${u}"><b onclick="event.stopPropagation();cur.images.splice(${i},1);drawMedia()">×</b>${i?"":"<small>MAIN</small>"}</div>`).join("")+(cur.video?`<div class="m">${cur.poster?`<img src="${cur.poster}">`:`<video src="${cur.video}" muted></video>`}<b onclick="cur.video='';cur.poster='';drawMedia()">×</b><small>VIDEO</small></div>`:"")}
 function mk(i){cur.images.unshift(...cur.images.splice(i,1));drawMedia()}
@@ -53,4 +71,59 @@ let disc=$("#disc").value.trim();if(!disc&&orig&&orig>price)disc="₹"+(orig-pri
 const d={...old,id,name,price,originalPrice:orig,discount:disc,category:$("#cat").value,isNew:$("#isnew").checked,image:cur.images[0]||"",images:cur.images.slice(1),video:cur.video,poster:cur.poster,description:$("#desc").value.trim(),variants:$("#vars").value.split(",").map(s=>s.trim()).filter(Boolean),specs};
 const r=await api("/api/products",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(d)});if(r.ok){say("Saved ✔");await load();reset()}else say("Could not save")}
 async function del(id){if(!confirm("Delete "+id+"?"))return;await api("/api/products?id="+encodeURIComponent(id),{method:"DELETE"});say("Deleted");load()}
+
+/* ===== Import Product by URL ===== */
+const E=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let IMP=null,impBusy=false;
+const ilog=l=>{$("#ist").innerHTML=l.map(x=>`<div class="${x[1]||""}">${E(x[0])}</div>`).join("")};
+async function impGo(){if(impBusy)return;const raw=$("#iu").value.trim();
+ if(!/^https?:\/\/[^\s]+$/i.test(raw))return ilog([["Enter a valid product page URL starting with http:// or https://","bad"]]);
+ impBusy=true;$("#ib").disabled=true;$("#ib").textContent="Importing…";IMP=null;$("#ipv").hidden=true;
+ ilog([["Validating URL…"],["Retrieving the product page and extracting details…"]]);
+ try{const r=await api("/api/import/preview",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({url:raw})});const d=await r.json().catch(()=>({}));
+  if(!r.ok)return ilog([[r.status===401?"Wrong password. Please log in again.":(d.error||"Import failed (HTTP "+r.status+")"),"bad"]]);
+  IMP=d;IMP.images=d.images.map(x=>({...x,selected:!!x.verified,stored:"",err:""}));IMP.vsel=d.videos.findIndex(v=>v.importable);IMP.vinc=IMP.vsel>=0;IMP.vstored="";IMP.verr="";
+  ilog([...d.log.map(l=>[l]),["Review the details below, then press Publish Product.","ok"]]);impShow()}
+ catch(e){ilog([["Network error. Check your connection and try again.","bad"]])}
+ finally{impBusy=false;$("#ib").disabled=false;$("#ib").textContent="Import Product"}}
+function impShow(){const d=IMP;$("#ipv").hidden=false;
+ $("#iname").value=d.name||"";$("#ibrand").value=d.brand||"";$("#isku").value=d.sku||"";$("#idesc").value=d.description||"";
+ $("#ispecs").value=Object.entries(d.specs||{}).map(([k,v])=>k+": "+v).join("\n");$("#iprice").value="";$("#iorig").value="";$("#inew").checked=false;
+ for(const o of $("#icat").options)if(d.category&&o.value.toLowerCase()===String(d.category).toLowerCase())$("#icat").value=o.value;
+ let host="";try{host=new URL(d.sourceUrl).host}catch{}
+ $("#isrc").innerHTML=`<b>Source:</b> ${E(host)}<br><b>Source price:</b> ${d.price!=null?E((d.currency||"currency not found")+" "+d.price):"not found"} <small>(the source site's price, not your selling price. Set your own in ₹ below.)</small>${d.listPrice?` <small>· listed at ${E(d.listPrice)}${d.discountPct?" ("+E(d.discountPct)+"% off)":""}</small>`:""}<br><b>Availability:</b> ${E(d.availability||"not found")}`
+  +(d.missing.length?`<div class="bad" style="margin-top:6px">Could not be extracted: ${E(d.missing.join(", "))}. Nothing was guessed, so fill these in yourself if needed.</div>`:"")
+  +(d.duplicate?`<div class="bad" style="margin-top:6px">This URL was already imported as “${E(d.duplicate.name)}” (${E(d.duplicate.id)}). Publishing again is blocked. <a href="#" onclick="edit('${E(d.duplicate.id)}');return false">Edit that product</a></div>`:"");
+ imgsDraw();vidDraw()}
+function imgsDraw(){const L=IMP.images,f=L.findIndex(x=>x.selected);
+ $("#iimgs").innerHTML=L.length?L.map((x,i)=>`<div class="ii"><img src="${E(x.url)}" referrerpolicy="no-referrer" loading="lazy" alt=""><div class="im"><label class="chk"><input type="checkbox" ${x.selected?"checked":""} onchange="IMP.images[${i}].selected=this.checked;imgsDraw()"> ${i===f?"Main photo":"Use this photo"}</label><small>${E(x.source)}${x.verified?"":" · found in the page, check it is this product"}</small><small class="${x.err?"bad":x.stored?"ok":""}">${x.err?E(x.err):x.stored?"Stored ✔":""}</small><div class="mv"><button class="l" onclick="imgMv(${i},-1)">▲</button><button class="l" onclick="imgMv(${i},1)">▼</button>${x.err?`<button class="g" onclick="IMP.images[${i}].err='';imgsDraw()">Retry</button><button class="l" onclick="IMP.images[${i}].err='';IMP.images[${i}].selected=false;imgsDraw()">Skip</button>`:""}</div></div></div>`).join(""):"<p>No product images were found on this page.</p>"}
+function imgMv(i,d){const L=IMP.images,j=i+d;if(j<0||j>=L.length)return;[L[i],L[j]]=[L[j],L[i]];imgsDraw()}
+function vidDraw(){const V=IMP.videos;if(!V.length){$("#ivid").innerHTML="<p>No product video was found on this page.</p>";return}
+ $("#ivid").innerHTML=`<label class="chk"><input type="checkbox" ${IMP.vinc?"checked":""} onchange="IMP.vinc=this.checked"> Include video</label>`+V.map((v,i)=>`<div class="vv"><label class="chk"><input type="radio" name="vsel" ${v.importable?"":"disabled"} ${IMP.vsel===i?"checked":""} onchange="IMP.vsel=${i}"> ${E(v.title||"Product video")} <small>${E([v.format,v.duration].filter(Boolean).join(" · "))}</small></label>${v.importable?`<video controls preload="none" playsinline referrerpolicy="no-referrer" ${v.poster?`poster="${E(v.poster)}"`:""} src="${E(v.url)}"></video>`:`<small class="bad">${E(v.reason)}</small>`}</div>`).join("")+(IMP.verr?`<div class="bad">${E(IMP.verr)} Untick “Include video” to skip it, or press Publish to retry.</div>`:"")}
+function impCancel(){IMP=null;$("#ipv").hidden=true;ilog([])}
+async function impStore(kind,url){const r=await api("/api/import/media",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({kind,url})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Download failed (HTTP "+r.status+")");return d}
+function frameUrl(u){return new Promise(res=>{const v=document.createElement("video");v.muted=true;v.playsInline=true;v.crossOrigin="anonymous";v.preload="auto";v.src=u;v.onloadeddata=()=>{v.currentTime=Math.min(1,(v.duration||2)/2)};v.onseeked=()=>{try{const s=Math.min(1,540/v.videoWidth),c=document.createElement("canvas");c.width=v.videoWidth*s;c.height=v.videoHeight*s;c.getContext("2d").drawImage(v,0,0,c.width,c.height);c.toBlob(b=>res(b?new File([b],"poster.jpg",{type:"image/jpeg"}):null),"image/jpeg",.8)}catch{res(null)}};v.onerror=()=>res(null);setTimeout(()=>res(null),12000)})}
+function nextId(){const n=items.map(p=>parseInt((p.id.match(/(\d+)$/)||[])[1])||0);return "RC-"+String(Math.max(0,...n)+1).padStart(3,"0")}
+async function impPublish(){if(impBusy||!IMP)return;
+ const name=$("#iname").value.trim(),price=Number($("#iprice").value);
+ if(!name)return say("Enter the product name");if(!(price>0))return say("Enter YOUR selling price in ₹");
+ impBusy=true;$("#ipub").disabled=true;$("#ipub").textContent="Publishing…";
+ try{let fails=0;const sel=IMP.images.filter(x=>x.selected);
+  for(const [n,x] of sel.entries()){if(x.stored)continue;x.err="";ilog([[`Downloading and uploading photo ${n+1} of ${sel.length}…`]]);try{x.stored=(await impStore("image",x.url)).url}catch(e){x.err=e.message;fails++}imgsDraw()}
+  const V=IMP.videos[IMP.vsel];let poster="";
+  if(IMP.vinc&&V){if(!IMP.vstored){IMP.verr="";ilog([["Downloading and uploading the video…"]]);try{IMP.vstored=(await impStore("video",V.url)).url}catch(e){IMP.verr="Video could not be imported: "+e.message;fails++}vidDraw()}}
+  if(fails)return ilog([[`${fails} file(s) could not be imported. Retry or skip them, then press Publish again. Nothing has been saved yet.`,"bad"]]);
+  if(IMP.vinc&&IMP.vstored){ilog([["Preparing the video cover image…"]]);
+   if(V&&V.poster){try{poster=(await impStore("image",V.poster)).url}catch{}}
+   if(!poster){const f=await frameUrl(IMP.vstored);if(f){try{poster=(await send(f)).url}catch{}}}}
+  const imgs=sel.map(x=>x.stored),orig=Number($("#iorig").value)||null,specs={};
+  $("#ispecs").value.split("\n").forEach(l=>{const i=l.indexOf(":");if(i>0)specs[l.slice(0,i).trim()]=l.slice(i+1).trim()});
+  const P={id:nextId(),name,price,originalPrice:orig&&orig>price?orig:null,discount:orig&&orig>price?"₹"+(orig-price).toLocaleString("en-IN")+" OFF":"",category:$("#icat").value,isNew:$("#inew").checked,image:imgs[0]||"",images:imgs.slice(1),video:IMP.vinc?IMP.vstored:"",poster:IMP.vinc?poster:"",description:$("#idesc").value.trim(),specs,brand:$("#ibrand").value.trim(),sku:$("#isku").value.trim(),sourceUrl:IMP.sourceUrl};
+  if(IMP.duplicate)P.id=IMP.duplicate.id;
+  ilog([["Saving the product…"]]);
+  const r=await api("/api/import/publish",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({product:P})});const d=await r.json().catch(()=>({}));
+  if(!r.ok)return ilog([[d.error||"Could not save (HTTP "+r.status+")","bad"]]);
+  ilog([[`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`,"ok"]]);say("Published ✔");$("#iu").value="";IMP=null;$("#ipv").hidden=true;await load();reset()}
+ catch(e){ilog([["Something went wrong. Please try again.","bad"]])}
+ finally{impBusy=false;$("#ipub").disabled=false;$("#ipub").textContent="Publish Product"}}
 </script></body></html>
