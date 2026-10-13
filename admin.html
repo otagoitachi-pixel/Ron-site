@@ -18,8 +18,8 @@ label{font-size:13px;color:#6d665a}button{background:#17130e;color:#fff;border:0
 <div id="login"><label>Admin password</label><input id="pw" type="password" autocomplete="current-password"><button onclick="enter(pw.value)">Login</button><p id="lerr" style="color:#b3261e"></p></div>
 <div id="app" hidden>
 <div class="box" id="imp"><h2 style="margin-top:0">Import Product by URL</h2>
-<label>Product page URL</label><input id="iu" type="url" inputmode="url" placeholder="https://…">
-<button class="g" id="ib" onclick="impGo()">Import Product</button><div id="ist"></div>
+<label>Product page URLs (one per line, up to 20)</label><textarea id="iu" rows="4" inputmode="url" placeholder="https://…&#10;https://…" style="white-space:pre;overflow-x:auto"></textarea>
+<button class="g" id="ib" onclick="impGo()">Import Products</button><div id="iqs"></div><div id="iq"></div><div id="ist"></div>
 <div id="ipv" hidden>
 <div class="box" id="isrc"></div>
 <div class="row"><div><label>Product name *</label><input id="iname"></div><div><label>Category *</label><select id="icat"><option>Men's Watches</option><option>Women's Watches</option><option>Digital Watches</option><option>Luxury Watches</option></select></div></div>
@@ -30,7 +30,7 @@ label{font-size:13px;color:#6d665a}button{background:#17130e;color:#fff;border:0
 <label>Specifications (one per line, like  Strap: Leather)</label><textarea id="ispecs" rows="4"></textarea>
 <label>Photos — tick the ones to use, ▲▼ to reorder (first ticked = main photo)</label><div id="iimgs"></div>
 <label>Video</label><div id="ivid"></div>
-<div class="row"><button class="l" onclick="impCancel()">Cancel</button><button class="g" id="ipub" onclick="impPublish()">Publish Product</button></div>
+<div class="row"><button class="l" onclick="impSkip()">Skip this product</button><button class="g" id="ipub" onclick="impPublish()">Publish Product</button></div>
 </div></div>
 <h2 id="ft">Add a watch</h2>
 <div class="row"><div><label>Product ID *</label><input id="id"></div><div><label>Category *</label><select id="cat"><option>Men's Watches</option><option>Women's Watches</option><option>Digital Watches</option><option>Luxury Watches</option></select></div></div>
@@ -76,16 +76,51 @@ async function del(id){if(!confirm("Delete "+id+"?"))return;await api("/api/prod
 const E=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let IMP=null,impBusy=false;
 const ilog=l=>{$("#ist").innerHTML=l.map(x=>`<div class="${x[1]||""}">${E(x[0])}</div>`).join("")};
-async function impGo(){if(impBusy)return;const raw=$("#iu").value.trim();
- if(!/^https?:\/\/[^\s]+$/i.test(raw))return ilog([["Enter a valid product page URL starting with http:// or https://","bad"]]);
- impBusy=true;$("#ib").disabled=true;$("#ib").textContent="Importing…";IMP=null;$("#ipv").hidden=true;
- ilog([["Validating URL…"],["Retrieving the product page and extracting details…"]]);
- try{const r=await api("/api/import/preview",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({url:raw})});const d=await r.json().catch(()=>({}));
-  if(!r.ok)return ilog([[r.status===401?"Wrong password. Please log in again.":(d.error||"Import failed (HTTP "+r.status+")"),"bad"]]);
-  IMP=d;IMP.images=d.images.map(x=>({...x,selected:!!x.verified,stored:"",err:""}));IMP.vsel=d.videos.findIndex(v=>v.importable);IMP.vinc=IMP.vsel>=0;IMP.vstored="";IMP.verr="";
-  ilog([...d.log.map(l=>[l]),["Review the details below, then press Publish Product.","ok"]]);impShow()}
- catch(e){ilog([["Network error. Check your connection and try again.","bad"]])}
- finally{impBusy=false;$("#ib").disabled=false;$("#ib").textContent="Import Product"}}
+const QMAX=20,FF=["iname","ibrand","isku","idesc","ispecs","iprice","iorig","icat"];
+let Q=[],CUR=null,qRun=false;
+const QL={pending:["Waiting",""],fetching:["Reading page…",""],ready:["Ready to review","ok"],failed:["Failed","bad"],published:["Published ✔","ok"],skipped:["Skipped",""]};
+function parseUrls(t){const seen=new Set(),out=[],bad=[];for(const s of String(t).split(/[\s,]+/)){const u=s.trim();if(!u)continue;if(!/^https?:\/\/[^\s]+$/i.test(u)){bad.push(u);continue}if(!seen.has(u)){seen.add(u);out.push(u)}}return{out,bad}}
+function qDraw(){
+ $("#iq").innerHTML=Q.map((q,i)=>{let host=q.url;try{const u=new URL(q.url);host=u.host+(u.pathname.length>1?u.pathname:"")}catch{}
+  const st=QL[q.status]||["",""],nm=q.data&&q.data.name?q.data.name:host,open=q===CUR;
+  const canOpen=q.status==="ready"&&!open,canRm=!open&&q.status!=="fetching";
+  return `<div class="ii" style="${open?"border-color:#a8802f;border-width:2px":""}"><div class="im"><b style="word-break:break-word">${i+1}. ${E(nm)}</b><small style="word-break:break-all">${E(q.url)}</small><small class="${st[1]}">${open?"Open below":st[0]}${q.status==="failed"&&q.error?": "+E(q.error):""}${q.data&&q.data.duplicate&&q.status!=="published"?" · already imported as "+E(q.data.duplicate.id):""}</small><div class="mv">${canOpen?`<button class="g" onclick="qOpen(Q[${i}],true)">Review</button>`:""}${q.status==="failed"?`<button class="g" onclick="qRetry(Q[${i}])">Retry</button>`:""}${canRm?`<button class="l" onclick="qRemove(${i})">Remove</button>`:""}</div></div></div>`}).join("");
+ const c=s=>Q.filter(q=>q.status===s).length;
+ $("#iqs").innerHTML=Q.length?(Q.length>1?`<div class="ok" style="margin:6px 0">${Q.length} links · ${c("published")} published · ${c("ready")+(CUR?1:0)} to review · ${c("failed")} failed${qRun?" · reading pages…":""}</div>`:"")+`<button class="l" style="width:auto;padding:6px 12px;margin:0 0 8px" onclick="impClear()">Clear list</button>`:""}
+function saveForm(){if(!CUR||!CUR.data)return;CUR.form={};FF.forEach(k=>CUR.form[k]=$("#"+k).value);CUR.form.inew=$("#inew").checked}
+function restoreForm(){if(!CUR||!CUR.form)return;FF.forEach(k=>$("#"+k).value=CUR.form[k]);$("#inew").checked=CUR.form.inew}
+function qOpen(q,scroll,quiet){if(!q||!q.data)return;if(impBusy)return say("Wait for the current publish to finish");saveForm();CUR=q;IMP=q.data;impShow();restoreForm();
+ if(!quiet)ilog([...(q.data.log||[]).map(l=>[l]),["Review the details below, then press Publish Product.","ok"]]);qDraw();if(scroll)$("#ipv").scrollIntoView({behavior:"smooth",block:"start"})}
+function qNext(msg){const n=Q.find(x=>x.status==="ready"),m=msg?[[msg,"ok"]]:[];
+ if(n){qOpen(n,false,true);ilog([...m,["The next product is ready for review below.","ok"]])}
+ else{ilog([...m,...(Q.some(x=>x.status==="pending"||x.status==="fetching")?[["Reading the remaining pages…"]]:Q.length?[["All links are done.","ok"]]:[])])}}
+function qRetry(q){if(!q)return;q.status="pending";q.error="";qDraw();qRunAll()}
+function qRemove(i){const q=Q[i];if(!q||q===CUR||q.status==="fetching")return;Q.splice(i,1);qDraw()}
+function impSkip(){if(impBusy)return say("Wait for the current publish to finish");if(!CUR)return;CUR.status="skipped";CUR=null;IMP=null;$("#ipv").hidden=true;qDraw();qNext()}
+function impClear(){if(impBusy)return say("Wait for the current publish to finish");Q=[];CUR=null;IMP=null;$("#ipv").hidden=true;ilog([]);qDraw()}
+async function qRunAll(){if(qRun)return;qRun=true;qDraw();
+ try{for(;;){const q=Q.find(x=>x.status==="pending");if(!q)break;q.status="fetching";qDraw();
+   try{const r=await api("/api/import/preview",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({url:q.url})});const d=await r.json().catch(()=>({}));
+    if(!Q.includes(q))continue;
+    if(!r.ok){q.status="failed";q.error=r.status===401?"Wrong password. Please log in again.":(d.error||"Import failed (HTTP "+r.status+")");
+     if(r.status===401){Q.forEach(x=>{if(x.status==="pending"){x.status="failed";x.error=q.error}});qDraw();break}}
+    else{d.images=(d.images||[]).map(x=>({...x,selected:!!x.verified,stored:"",err:""}));d.videos=d.videos||[];d.missing=d.missing||[];d.log=d.log||[];
+     d.vsel=d.videos.findIndex(v=>v.importable);d.vinc=d.vsel>=0;d.vstored="";d.verr="";q.data=d;q.status="ready";if(!CUR&&!impBusy)qOpen(q,false)}}
+   catch(e){if(Q.includes(q)){q.status="failed";q.error="Network error. Check your connection."}}
+   qDraw();await new Promise(r=>setTimeout(r,300))}}
+ finally{qRun=false;qDraw()}}
+async function impGo(){const{out,bad}=parseUrls($("#iu").value);
+ if(!out.length)return ilog([[bad.length?"These are not valid links. Each must start with http:// or https://":"Paste at least one product page URL (starting with http:// or https://).","bad"]]);
+ const have=new Set(Q.map(q=>q.url));let fresh=out.filter(u=>!have.has(u));const dup=out.length-fresh.length;
+ if(!fresh.length)return ilog([["Those links are already in the list below.","bad"]]);
+ const room=QMAX-Q.filter(q=>q.status!=="published"&&q.status!=="skipped").length;
+ if(room<=0)return ilog([[`The list already has ${QMAX} unfinished links. Finish or clear some first.`,"bad"]]);
+ const over=fresh.slice(room);fresh=fresh.slice(0,room);
+ fresh.forEach(u=>Q.push({url:u,status:"pending",data:null,error:"",form:null}));
+ $("#iu").value=[...bad,...over].join("\n");
+ const notes=[];if(bad.length)notes.push([`${bad.length} invalid link(s) were left in the box. Each must start with http:// or https://`,"bad"]);if(over.length)notes.push([`Only ${QMAX} unfinished links are allowed at once. ${over.length} link(s) were left in the box.`,"bad"]);if(dup)notes.push([`${dup} link(s) already in the list were skipped.`]);
+ if(!CUR)ilog(notes.length?notes:[[`Reading ${fresh.length} page(s)…`]]);
+ qDraw();qRunAll()}
 function impShow(){const d=IMP;$("#ipv").hidden=false;
  $("#iname").value=d.name||"";$("#ibrand").value=d.brand||"";$("#isku").value=d.sku||"";$("#idesc").value=d.description||"";
  $("#ispecs").value=Object.entries(d.specs||{}).map(([k,v])=>k+": "+v).join("\n");$("#iprice").value="";$("#iorig").value="";$("#inew").checked=false;
@@ -100,7 +135,6 @@ function imgsDraw(){const L=IMP.images,f=L.findIndex(x=>x.selected);
 function imgMv(i,d){const L=IMP.images,j=i+d;if(j<0||j>=L.length)return;[L[i],L[j]]=[L[j],L[i]];imgsDraw()}
 function vidDraw(){const V=IMP.videos;if(!V.length){$("#ivid").innerHTML="<p>No product video was found on this page.</p>";return}
  $("#ivid").innerHTML=`<label class="chk"><input type="checkbox" ${IMP.vinc?"checked":""} onchange="IMP.vinc=this.checked"> Include video</label>`+V.map((v,i)=>`<div class="vv"><label class="chk"><input type="radio" name="vsel" ${v.importable?"":"disabled"} ${IMP.vsel===i?"checked":""} onchange="IMP.vsel=${i}"> ${E(v.title||"Product video")} <small>${E([v.format,v.duration].filter(Boolean).join(" · "))}</small></label>${v.importable?`<video controls preload="none" playsinline referrerpolicy="no-referrer" ${v.poster?`poster="${E(v.poster)}"`:""} src="${E(v.url)}"></video>`:`<small class="bad">${E(v.reason)}</small>`}</div>`).join("")+(IMP.verr?`<div class="bad">${E(IMP.verr)} Untick “Include video” to skip it, or press Publish to retry.</div>`:"")}
-function impCancel(){IMP=null;$("#ipv").hidden=true;ilog([])}
 async function impStore(kind,url){const r=await api("/api/import/media",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({kind,url})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Download failed (HTTP "+r.status+")");return d}
 function frameUrl(u){return new Promise(res=>{const v=document.createElement("video");v.muted=true;v.playsInline=true;v.crossOrigin="anonymous";v.preload="auto";v.src=u;v.onloadeddata=()=>{v.currentTime=Math.min(1,(v.duration||2)/2)};v.onseeked=()=>{try{const s=Math.min(1,540/v.videoWidth),c=document.createElement("canvas");c.width=v.videoWidth*s;c.height=v.videoHeight*s;c.getContext("2d").drawImage(v,0,0,c.width,c.height);c.toBlob(b=>res(b?new File([b],"poster.jpg",{type:"image/jpeg"}):null),"image/jpeg",.8)}catch{res(null)}};v.onerror=()=>res(null);setTimeout(()=>res(null),12000)})}
 function nextId(){const n=items.map(p=>parseInt((p.id.match(/(\d+)$/)||[])[1])||0);return "RC-"+String(Math.max(0,...n)+1).padStart(3,"0")}
@@ -123,7 +157,7 @@ async function impPublish(){if(impBusy||!IMP)return;
   ilog([["Saving the product…"]]);
   const r=await api("/api/import/publish",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({product:P})});const d=await r.json().catch(()=>({}));
   if(!r.ok)return ilog([[d.error||"Could not save (HTTP "+r.status+")","bad"]]);
-  ilog([[`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`,"ok"]]);say("Published ✔");$("#iu").value="";IMP=null;$("#ipv").hidden=true;await load();reset()}
+  ilog([[`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`,"ok"]]);say("Published ✔");if(CUR){CUR.status="published"}CUR=null;IMP=null;$("#ipv").hidden=true;await load();reset();impBusy=false;qDraw();qNext(`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`)}
  catch(e){ilog([["Something went wrong. Please try again.","bad"]])}
  finally{impBusy=false;$("#ipub").disabled=false;$("#ipub").textContent="Publish Product"}}
 </script></body></html>
