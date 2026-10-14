@@ -5,3 +5,4 @@ package-lock.json
 schema.sql
 .assetsignore
 .gitignore
+*.zip
