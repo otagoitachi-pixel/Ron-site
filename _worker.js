@@ -26,13 +26,13 @@ async function readLimited(r,max){if((+r.headers.get('content-length')||0)>max)t
 const absUrl=(s,b)=>{try{if(!s)return null;const u=new URL(dec(String(s).trim()),b);return /^https?:$/.test(u.protocol)?u.href:null}catch{return null}};
 function normSrc(href){const u=new URL(href);u.hash='';for(const k of [...u.searchParams.keys()])if(/^(utm_|fbclid|gclid|mc_|_ga|ref$)/i.test(k))u.searchParams.delete(k);return u.href.replace(/\/$/,'')}
 function metas(html){const m={};for(const t of html.match(/<meta\s[^>]*>/gi)||[]){const k=/(?:property|name|itemprop)\s*=\s*["']([^"']+)["']/i.exec(t),c=/content\s*=\s*["']([^"']*)["']/i.exec(t);if(k&&c){const key=k[1].toLowerCase();(m[key]=m[key]||[]).push(dec(c[1]))}}return m}
-function ldData(html){const out=[],vids=[];
- const walk=n=>{if(Array.isArray(n))return n.forEach(walk);if(!n||typeof n!=='object')return;const t=[].concat(n['@type']||[]).map(String);if(t.includes('Product'))out.push(n);if(t.includes('VideoObject'))vids.push(n);if(n['@graph'])walk(n['@graph']);if(n.video)walk(n.video)};
+function ldData(html){const out=[],vids=[],orgs=[];
+ const walk=n=>{if(Array.isArray(n))return n.forEach(walk);if(!n||typeof n!=='object')return;const t=[].concat(n['@type']||[]).map(String);if(t.includes('Product'))out.push(n);if(t.includes('VideoObject'))vids.push(n);if(t.some(x=>/^(Organization|WebSite|Store|LocalBusiness|OnlineStore)$/.test(x)))orgs.push(n);if(n['@graph'])walk(n['@graph']);if(n.video)walk(n.video)};
  for(const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)){try{walk(JSON.parse(m[1].trim()))}catch{}}
- return {out,vids}}
+ return {out,vids,orgs}}
 const set=(R,k,v,src)=>{if(v==null||v===''||R[k])return;R[k]=typeof v==='string'?v.trim():v;R.found[k]=src};
 const imgKey=u=>u.split('#')[0].split('?')[0].replace(/[_-]\d+x\d*(?=\.\w+$)/,'').toLowerCase();
-function addImg(R,u,source,verified){if(!u)return;if(/\.(svg|gif)(\?|$)/i.test(u))return;
+function addImg(R,u,source,verified){if(!u)return;try{if(/(^|[\/_.-])(logo|favicon|sprite|apple-touch-icon|site-icon|watermark)([\/_.-]|$)/i.test(new URL(u).pathname))return}catch{}if(/\.(svg|gif)(\?|$)/i.test(u))return;
  if(/cdn\.shopify\.com|\/cdn\/shop\//.test(u))u=u.replace(/_\d+x\d*(?=\.\w+(\?|$))/,'');
  const k=imgKey(u),ex=R.images.find(i=>imgKey(i.url)===k);
  if(ex){if(verified&&!ex.verified){ex.verified=true;ex.source=source}return}
@@ -106,7 +106,7 @@ async function impPreview(raw,env){const log=[];
  const html=new TextDecoder().decode(await readLimited(r,3e6));
  if(/captcha|verify you are (a )?human|just a moment\.\.\./i.test(html.slice(0,20000))&&!/application\/ld\+json/i.test(html))throw new E('The website is asking for human verification, which is never bypassed.',422);
  log.push(`Page retrieved (HTTP ${r.status})`);
- const R=extract(html,url,log);await shopify(R,url,log);let skip=false;for(const P of PARSERS)if(P.test(url,html)){P.run(R,html,url,log);skip=skip||P.skipGallery}if(!skip)gallery(R,html,url);finalize(R,log);
+ const R=extract(html,url,log);await shopify(R,url,log);let skip=false;for(const P of PARSERS)if(P.test(url,html)){P.run(R,html,url,log);skip=skip||P.skipGallery}if(!skip)gallery(R,html,url);finalize(R,log);cleanPreview(R,url,html);
  R.sourceUrl=normSrc(url.href);R.duplicate=null;
  const d=await env.DB.prepare("SELECT id,data FROM products WHERE json_extract(data,'$.sourceUrl')=?").bind(R.sourceUrl).first();
  if(d){let n='';try{n=JSON.parse(d.data).name}catch{}R.duplicate={id:d.id,name:n}}
@@ -119,15 +119,18 @@ async function impMedia(b,env){const kind=b.kind==='video'?'video':'image';
  let ct=(r.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
  if(!MT[ct]&&(!ct||/octet-stream/.test(ct))){const m=/\.(\w{3,4})$/.exec(url.pathname);ct=(m&&EXT[m[1].toLowerCase()])||ct}
  const t=MT[ct];if(!t||t[0]!==kind)throw new E(`Unsupported file type (${ct||'unknown'}).`,415);
- const bytes=await readLimited(r,kind==='video'?40e6:10e6);if(!bytes.length)throw new E('The file was empty.',422);
+ const raw=await readLimited(r,kind==='video'?40e6:10e6);if(!raw.length)throw new E('The file was empty.',422);const {bytes,cleaned}=cleanMedia(raw,ct);
  const h=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
  const key=h.slice(0,40)+'.'+t[1];await sbPut(env,key,bytes,ct);
- return {url:'/media/'+key,type:kind,size:bytes.length}}
+ return {url:'/media/'+key,type:kind,size:bytes.length,cleaned}}
 async function impPublish(P,env){
  if(!P||typeof P!=='object')throw new E('Missing product data.');
- const id=String(P.id||'').trim(),name=String(P.name||'').trim(),price=Number(P.price);
+ const id=String(P.id||'').trim(),price=Number(P.price);
  if(!/^[\w-]{1,40}$/.test(id))throw new E('Invalid product ID.');
- if(!name||name.length>200)throw new E('Product name is required (max 200 characters).');
+ let terms=[];try{if(P.sourceUrl)terms=sourceTerms(checkUrl(P.sourceUrl),null,P.sourceTerms)}catch{}
+ const C={links:0,contacts:0,names:0};
+ const name=scrubText(String(P.name||'').trim(),terms,C);
+ if(!name||name.length>200)throw new E('Product name is required (max 200 characters). Source website names and links are removed automatically, so the name may have become empty.');
  if(!(price>0)||price>1e7)throw new E('Enter your selling price in ₹.');
  const okm=u=>typeof u==='string'&&/^\/media\/[\w.-]+$/.test(u);
  if([P.image,...(P.images||[])].filter(Boolean).some(u=>!okm(u))||(P.video&&!okm(P.video))||(P.poster&&!okm(P.poster)))throw new E('All media must be stored in your own storage before publishing.');
@@ -135,11 +138,102 @@ async function impPublish(P,env){
  if(src){const d=await env.DB.prepare("SELECT id FROM products WHERE json_extract(data,'$.sourceUrl')=? AND id<>?").bind(src,id).first();if(d)throw new E('This product URL was already imported as '+d.id+'.',409)}
  const ex=await env.DB.prepare('SELECT data FROM products WHERE id=?').bind(id).first();
  if(ex){let o={};try{o=JSON.parse(ex.data)}catch{}if(!src||o.sourceUrl!==src)throw new E('Product ID '+id+' is already used by another product.',409)}
- const specs={};for(const [k,v] of Object.entries(P.specs||{}).slice(0,40))if(k&&v)specs[String(k).slice(0,60)]=String(v).slice(0,200);
+ const specs={};for(const [k,v] of Object.entries(P.specs||{}).slice(0,40)){const kk=scrubText(String(k).slice(0,60),terms,C),vv=scrubText(String(v).slice(0,200),terms,C);if(kk&&vv)specs[kk]=vv}
  const orig=Number(P.originalPrice);
- const d={id,name,price,originalPrice:orig>price?orig:null,discount:String(P.discount||'').slice(0,40),category:String(P.category||'').slice(0,60),isNew:!!P.isNew,image:P.image||'',images:(P.images||[]).filter(Boolean),video:P.video||'',poster:P.poster||'',description:String(P.description||'').slice(0,3000),variants:[],specs,brand:String(P.brand||'').slice(0,80),sku:String(P.sku||'').slice(0,80),sourceUrl:src,rating:null,reviewCount:0,reviews:[]};
+ const d={id,name,price,originalPrice:orig>price?orig:null,discount:String(P.discount||'').slice(0,40),category:String(P.category||'').slice(0,60),isNew:!!P.isNew,image:P.image||'',images:(P.images||[]).filter(Boolean),video:P.video||'',poster:P.poster||'',description:scrubText(String(P.description||'').slice(0,3000),terms,C),variants:[],specs,brand:scrubText(String(P.brand||'RON COLLECTION').slice(0,80),terms,C)||'RON COLLECTION',sku:String(P.sku||'').slice(0,80),sourceUrl:src,rating:null,reviewCount:0,reviews:[]};
  await env.DB.prepare('INSERT INTO products(id,data,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').bind(id,JSON.stringify(d),Date.now()).run();
- return {ok:1,product:d}}
+ return {ok:1,product:d,scrubbed:C}}
+/* ===== Source privacy: nothing that points to the source website is published ===== */
+const PRIV=['sourceUrl','sourceTerms','sku','brand'];
+const GENERIC=new Set(['www','shop','shops','store','stores','web','online','site','shopping','mall','market','official','india','watch','watches','fashion','style','luxury','gold','silver','time','clock','men','mens','women','womens','collection','collections','boutique','world','club','hub','mart','bazaar','bazar','trends','trend','the','and','new','best','top','premium','product','products','home','buy','sale']);
+function sourceTerms(url,html,extra){
+ const T=new Set(),add=s=>{s=String(s||'').replace(/\s+/g,' ').trim();if(s.length>=3&&s.length<=80)T.add(s)};
+ const host=url.hostname.toLowerCase().replace(/^www\./,'');add(host);
+ const labels=host.split('.');labels.pop();
+ for(const l of labels){if(l.length<3||GENERIC.has(l))continue;
+  if(/[-_]/.test(l)){add(l);add(l.replace(/[-_]+/g,' '));add(l.replace(/[-_]+/g,''))}else if(l.length>=5)add(l)}
+ if(html){const M=metas(html);for(const k of ['og:site_name','application-name'])(M[k]||[]).forEach(add);
+  const {out,orgs}=ldData(html);for(const o of orgs)add(o.name);
+  for(const P of out)[].concat(P.offers||[]).forEach(of=>{if(of&&of.seller)add(of.seller.name)})}
+ for(const x of [].concat(extra||[]).slice(0,12))if(typeof x==='string')add(x);
+ for(const t of [...T]){const w=t.split(/\s+/);while(w.length>1&&/^(store|stores|shop|shops|official|online|boutique|mart|India|collection|collections)$/i.test(w[w.length-1]))w.pop();const v=w.join(' ');if(v!==t&&v.length>=3)T.add(v)}
+ return [...T].filter(x=>!GENERIC.has(x.toLowerCase())).sort((a,b)=>b.length-a.length)}
+const RE_ESC=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+function scrubText(s,terms,C){
+ if(s==null)return s;let t=String(s);
+ const go=(k,re,rep)=>{t=t.replace(re,(...a)=>{C[k]++;return typeof rep==='function'?rep(...a):rep})};
+ go('links',/https?:\/\/[^\s<>"')\]]+/gi,'');
+ go('links',/\bwww\.[^\s<>"')\]]+/gi,'');
+ go('contacts',/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g,'');
+ go('links',/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|in|co\.in|net|org|io|shop|store|me|co|online|site|app|biz|info)\b(?:\/[^\s<>"')\]]*)?/gi,'');
+ go('contacts',/(?:\+?91[\s-]?|\b0)?[6-9]\d{4}[\s-]?\d{5}\b/g,'');
+ go('contacts',/\+\d{1,3}[\s-]?\d[\d\s-]{7,}\d/g,'');
+ go('contacts',/(^|[\s(])@[\w.]{3,}/g,(m,p)=>p);
+ for(const term of terms||[]){const re=new RegExp('(?<![A-Za-z0-9])'+RE_ESC(term).replace(/\s+/g,'[\\s_-]*')+'(?![A-Za-z0-9])','gi');go('names',re,'')}
+ return t.replace(/[ \t]{2,}/g,' ').replace(/\s+([,.;:!?])/g,'$1').replace(/\(\s*\)|\[\s*\]/g,'').replace(/^[\s|–—:,-]+|[\s|–—:,-]+$/g,'').replace(/\s+(?:by|from|at|via|on|for|with|of|and|&|\|)\s*$/i,'').replace(/\n{3,}/g,'\n\n')}
+function cleanPreview(R,url,html){
+ const C={links:0,contacts:0,names:0},terms=sourceTerms(url,html);
+ R.sourceTerms=terms;R.sourceBrand=R.brand||null;R.sourceSku=R.sku||null;delete R.brand;delete R.sku;
+ for(const k of ['name','description','category','color','material','dimensions'])if(R[k])R[k]=scrubText(R[k],terms,C)||null;
+ const sp={};for(const [k,v] of Object.entries(R.specs||{})){if(k==='Brand'||k==='Model / SKU')continue;const kk=scrubText(k,terms,C),vv=scrubText(v,terms,C);if(kk&&vv)sp[kk]=vv}
+ R.specs=sp;R.scrubbed=C;R.missing=(R.missing||[]).filter(x=>x!=='brand'&&x!=='model / SKU')}
+/* ----- strip hidden metadata (EXIF, XMP, IPTC, comments, text chunks, MP4 tags) from imported files ----- */
+const catU8=parts=>{let n=0;for(const p of parts)n+=p.length;const o=new Uint8Array(n);let k=0;for(const p of parts){o.set(p,k);k+=p.length}return o};
+function exifOrientation(seg){try{
+ if(!(seg[4]===0x45&&seg[5]===0x78&&seg[6]===0x69&&seg[7]===0x66))return 1;
+ const t=10,le=seg[t]===0x49,u16=o=>le?seg[o]|(seg[o+1]<<8):(seg[o]<<8)|seg[o+1],u32=o=>(le?(seg[o]|(seg[o+1]<<8)|(seg[o+2]<<16)|(seg[o+3]<<24)):((seg[o]<<24)|(seg[o+1]<<16)|(seg[o+2]<<8)|seg[o+3]))>>>0;
+ const ifd=t+u32(t+4),n=u16(ifd);
+ for(let i=0;i<n;i++){const e=ifd+2+i*12;if(e+12>seg.length)break;if(u16(e)===0x0112){const v=u16(e+8);return v>=1&&v<=8?v:1}}}catch{}return 1}
+function miniExif(o){const body=[0x45,0x78,0x69,0x66,0,0,0x4D,0x4D,0,0x2A,0,0,0,8,0,1,0x01,0x12,0,3,0,0,0,1,0,o,0,0,0,0,0,0],len=body.length+2;return Uint8Array.from([0xFF,0xE1,len>>8,len&255,...body])}
+function stripJpeg(b){
+ if(b[0]!==0xFF||b[1]!==0xD8)return b;
+ const out=[b.subarray(0,2)];let i=2,done=false;
+ while(i<b.length){
+  if(b[i]!==0xFF){out.push(b.subarray(i));break}
+  const m=b[i+1];
+  if(m===0xFF){i++;continue}
+  if(m===0xD8||m===0x01||(m>=0xD0&&m<=0xD7)){out.push(b.subarray(i,i+2));i+=2;continue}
+  if(m===0xD9){out.push(b.subarray(i,i+2));i+=2;break}
+  if(m===0xDA){out.push(b.subarray(i));break}
+  const len=(b[i+2]<<8)|b[i+3],seg=b.subarray(i,i+2+len);
+  if(m===0xE1){const o=exifOrientation(seg);if(o>1&&!done){out.push(miniExif(o));done=true}}
+  else if(m===0xE0||m===0xEE||(m===0xE2&&String.fromCharCode(...seg.subarray(4,15))==='ICC_PROFILE')||!((m>=0xE0&&m<=0xEF)||m===0xFE))out.push(seg);
+  i+=2+len}
+ return catU8(out)}
+function stripPng(b){
+ const sig=[137,80,78,71,13,10,26,10];if(b.length<8||sig.some((v,i)=>b[i]!==v))return b;
+ const out=[b.subarray(0,8)],DROP=new Set(['tEXt','zTXt','iTXt','eXIf','tIME']);let i=8;
+ while(i+12<=b.length){const len=((b[i]<<24)|(b[i+1]<<16)|(b[i+2]<<8)|b[i+3])>>>0,type=String.fromCharCode(b[i+4],b[i+5],b[i+6],b[i+7]),end=i+12+len;
+  if(end>b.length){out.push(b.subarray(i));break}
+  if(!DROP.has(type))out.push(b.subarray(i,end));
+  i=end;if(type==='IEND')break}
+ return catU8(out)}
+function stripWebp(b){
+ const s4=o=>String.fromCharCode(b[o],b[o+1],b[o+2],b[o+3]);
+ if(b.length<12||s4(0)!=='RIFF'||s4(8)!=='WEBP')return b;
+ const out=[b.slice(0,12)];let i=12;
+ while(i+8<=b.length){const type=s4(i),len=(b[i+4]|(b[i+5]<<8)|(b[i+6]<<16)|(b[i+7]<<24))>>>0,end=i+8+len+(len&1),stop=Math.min(end,b.length);
+  if(type==='EXIF'||type==='XMP '){}
+  else if(type==='VP8X'){const c=b.slice(i,stop);c[8]&=~0x0C;out.push(c)}
+  else out.push(b.subarray(i,stop));
+  i=end}
+ const res=catU8(out),n=res.length-8;res[4]=n&255;res[5]=(n>>8)&255;res[6]=(n>>16)&255;res[7]=(n>>>24)&255;return res}
+function blankMp4(b){
+ const u32=o=>((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0,ty=o=>String.fromCharCode(b[o],b[o+1],b[o+2],b[o+3]),BLANK=new Set(['udta','meta','uuid']);let n=0;
+ const walk=(s,e,depth)=>{let i=s;while(i+8<=e){let size=u32(i),hdr=8;const t=ty(i+4);
+  if(size===1){if(i+16>e)break;size=u32(i+8)*4294967296+u32(i+12);hdr=16}else if(size===0)size=e-i;
+  if(size<hdr||i+size>e)break;
+  if(BLANK.has(t)){b[i+4]=0x66;b[i+5]=0x72;b[i+6]=0x65;b[i+7]=0x65;b.fill(0,i+hdr,i+size);n++}
+  else if((t==='moov'||t==='trak')&&depth<3)walk(i+hdr,i+size,depth+1);
+  i+=size}};
+ walk(0,b.length,0);return n}
+function cleanMedia(bytes,ct){try{
+ if(ct==='image/jpeg'){const o=stripJpeg(bytes);if(o[0]===0xFF&&o[1]===0xD8&&(bytes[bytes.length-1]!==0xD9||o[o.length-1]===0xD9))return{bytes:o,cleaned:true};return{bytes,cleaned:false}}
+ if(ct==='image/png'){const o=stripPng(bytes);if(o.length>12&&String.fromCharCode(...o.subarray(o.length-8,o.length-4))==='IEND')return{bytes:o,cleaned:true};return{bytes,cleaned:false}}
+ if(ct==='image/webp')return{bytes:stripWebp(bytes),cleaned:true};
+ if(ct==='video/mp4'||ct==='video/quicktime'){blankMp4(bytes);return{bytes,cleaned:true}}
+ }catch{}return{bytes,cleaned:false}}
+/* ===== end source privacy ===== */
 /* ===== Supabase Storage (media files) ===== */
 async function sbPut(env,key,body,type){
  const base=(env.SUPABASE_URL||'').replace(/\/$/,'');
@@ -154,9 +248,12 @@ try{
 if(p==='/api/check')return authed()?J({ok:1}):J({error:'no'},401);
 if(p==='/api/products'){
  if(req.method==='GET'){const {results}=await env.DB.prepare('SELECT data FROM products ORDER BY created DESC').all();
-  return new Response('['+results.map(r=>r.data).join(',')+']',{headers:{'content-type':'application/json','cache-control':'no-store'}})}
+  const pub=[];for(const r of results){try{const o=JSON.parse(r.data);for(const k of PRIV)delete o[k];pub.push(o)}catch{}}
+  return new Response(JSON.stringify(pub),{headers:{'content-type':'application/json','cache-control':'no-store'}})}
  if(!authed())return J({error:'Wrong password'},401);
  if(req.method==='POST'){const d=await req.json();if(!d.id||!d.name)return J({error:'ID and name required'},400);
+  const prev=await env.DB.prepare('SELECT data FROM products WHERE id=?').bind(d.id).first();
+  if(prev){try{const o=JSON.parse(prev.data);for(const k of PRIV)if(o[k]!==undefined&&d[k]===undefined)d[k]=o[k]}catch{}}
   await env.DB.prepare('INSERT INTO products(id,data,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').bind(d.id,JSON.stringify(d),Date.now()).run();return J({ok:1})}
  if(req.method==='DELETE'){await env.DB.prepare('DELETE FROM products WHERE id=?').bind(u.searchParams.get('id')).run();return J({ok:1})}
 }
@@ -187,4 +284,22 @@ if(p.startsWith('/media/')){
  h.set('cache-control','public,max-age=31536000,immutable');
  return new Response(up.body,{status:up.status,headers:h})}
 }catch(e){if(e instanceof E)return J({error:e.message},e.status||400);return J({error:'Server error. Please try again.'},500)}
+if(p==='/robots.txt')return new Response('User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: '+u.origin+'/sitemap.xml\n',{headers:{'content-type':'text/plain'}});
+if(p==='/sitemap.xml'){let lm='';try{const {results}=await env.DB.prepare('SELECT MAX(created) m FROM products').all();if(results&&results[0]&&results[0].m)lm='<lastmod>'+new Date(results[0].m).toISOString().slice(0,10)+'</lastmod>'}catch{}
+ return new Response('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>'+u.origin+'/</loc>'+lm+'<changefreq>weekly</changefreq><priority>1.0</priority></url></urlset>',{headers:{'content-type':'application/xml'}})}
+if((p==='/'||p==='/index.html')&&req.method==='GET'){
+ const res=await env.ASSETS.fetch(new Request(u.origin+'/',{headers:req.headers}));
+ if(res.ok&&(res.headers.get('content-type')||'').includes('html'))try{
+  let html=await res.text();const O=u.origin,abs=x=>x?(/^https?:/.test(x)?x:O+(x.startsWith('/')?x:'/'+x)):undefined;
+  const {results}=await env.DB.prepare('SELECT data FROM products ORDER BY created DESC').all();const L=[];
+  for(const r of results){try{const o=JSON.parse(r.data);if(!o.name||!(o.price>0))continue;
+   const pr={'@type':'Product',name:o.name,sku:o.id,image:[o.image,...(o.images||[])].filter(Boolean).map(abs),brand:{'@type':'Brand',name:'RON COLLECTION'},offers:{'@type':'Offer',url:O+'/',priceCurrency:'INR',price:String(o.price)}};
+   if(o.description)pr.description=String(o.description).slice(0,300);L.push(pr)}catch{}}
+  const ld=[{'@context':'https://schema.org','@type':'Organization',name:'RON COLLECTION',url:O+'/',logo:O+'/images/logo.png'},{'@context':'https://schema.org','@type':'WebSite',name:'RON COLLECTION',url:O+'/'}];
+  if(L.length)ld.push({'@context':'https://schema.org','@type':'ItemList',itemListElement:L.slice(0,50).map((x,i)=>({'@type':'ListItem',position:i+1,item:x}))});
+  const first=(L[0]&&L[0].image&&L[0].image[0])||O+'/images/logo.png';
+  const inj='<link rel="canonical" href="'+O+'/"><meta property="og:url" content="'+O+'/">'+(first?'<meta property="og:image" content="'+first+'"><meta name="twitter:image" content="'+first+'">':'')+'<script type="application/ld+json">'+JSON.stringify(ld).replace(/</g,'\\u003c')+'</script>';
+  const h=new Headers(res.headers);h.delete('content-length');h.delete('etag');h.set('cache-control','public,max-age=300');
+  return new Response(html.replace('</head>',inj+'</head>'),{status:200,headers:h})}catch{}
+ return env.ASSETS.fetch(req)}
 return env.ASSETS.fetch(req)}}

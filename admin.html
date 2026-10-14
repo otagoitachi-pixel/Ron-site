@@ -122,11 +122,11 @@ async function impGo(){const{out,bad}=parseUrls($("#iu").value);
  if(!CUR)ilog(notes.length?notes:[[`Reading ${fresh.length} page(s)…`]]);
  qDraw();qRunAll()}
 function impShow(){const d=IMP;$("#ipv").hidden=false;
- $("#iname").value=d.name||"";$("#ibrand").value=d.brand||"";$("#isku").value=d.sku||"";$("#idesc").value=d.description||"";
- $("#ispecs").value=Object.entries(d.specs||{}).map(([k,v])=>k+": "+v).join("\n");$("#iprice").value="";$("#iorig").value="";$("#inew").checked=false;
+ $("#iname").value=d.name||"";$("#ibrand").value="RON COLLECTION";$("#isku").value="";$("#idesc").value=d.description||"";
+ $("#ispecs").value=[["Brand","RON COLLECTION"],...Object.entries(d.specs||{}).filter(([k])=>!/^(brand|model\s*\/?\s*sku|sku|model)$/i.test(k.trim()))].map(([k,v])=>k+": "+v).join("\n");$("#iprice").value="";$("#iorig").value="";$("#inew").checked=false;
  for(const o of $("#icat").options)if(d.category&&o.value.toLowerCase()===String(d.category).toLowerCase())$("#icat").value=o.value;
  let host="";try{host=new URL(d.sourceUrl).host}catch{}
- $("#isrc").innerHTML=`<b>Source:</b> ${E(host)}<br><b>Source price:</b> ${d.price!=null?E((d.currency||"currency not found")+" "+d.price):"not found"} <small>(the source site's price, not your selling price. Set your own in ₹ below.)</small>${d.listPrice?` <small>· listed at ${E(d.listPrice)}${d.discountPct?" ("+E(d.discountPct)+"% off)":""}</small>`:""}<br><b>Availability:</b> ${E(d.availability||"not found")}`
+ $("#isrc").innerHTML=`<b>Source:</b> ${E(host)}<br><b>Source price:</b> ${d.price!=null?E((d.currency||"currency not found")+" "+d.price):"not found"} <small>(the source site's price, not your selling price. Set your own in ₹ below.)</small>${d.listPrice?` <small>· listed at ${E(d.listPrice)}${d.discountPct?" ("+E(d.discountPct)+"% off)":""}</small>`:""}<br><b>Availability:</b> ${E(d.availability||"not found")}<br><small>Admin only, never published: source brand “${E(d.sourceBrand||"none")}”, SKU “${E(d.sourceSku||"none")}”.${d.scrubbed&&(d.scrubbed.links||d.scrubbed.contacts||d.scrubbed.names)?` Auto-removed from the text: ${d.scrubbed.links} link(s), ${d.scrubbed.contacts} contact(s), ${d.scrubbed.names} source name(s).`:""} Please still read the name, description and specs once.</small>`
   +(d.missing.length?`<div class="bad" style="margin-top:6px">Could not be extracted: ${E(d.missing.join(", "))}. Nothing was guessed, so fill these in yourself if needed.</div>`:"")
   +(d.duplicate?`<div class="bad" style="margin-top:6px">This URL was already imported as “${E(d.duplicate.name)}” (${E(d.duplicate.id)}). Publishing again is blocked. <a href="#" onclick="edit('${E(d.duplicate.id)}');return false">Edit that product</a></div>`:"");
  imgsDraw();vidDraw()}
@@ -135,7 +135,8 @@ function imgsDraw(){const L=IMP.images,f=L.findIndex(x=>x.selected);
 function imgMv(i,d){const L=IMP.images,j=i+d;if(j<0||j>=L.length)return;[L[i],L[j]]=[L[j],L[i]];imgsDraw()}
 function vidDraw(){const V=IMP.videos;if(!V.length){$("#ivid").innerHTML="<p>No product video was found on this page.</p>";return}
  $("#ivid").innerHTML=`<label class="chk"><input type="checkbox" ${IMP.vinc?"checked":""} onchange="IMP.vinc=this.checked"> Include video</label>`+V.map((v,i)=>`<div class="vv"><label class="chk"><input type="radio" name="vsel" ${v.importable?"":"disabled"} ${IMP.vsel===i?"checked":""} onchange="IMP.vsel=${i}"> ${E(v.title||"Product video")} <small>${E([v.format,v.duration].filter(Boolean).join(" · "))}</small></label>${v.importable?`<video controls preload="none" playsinline referrerpolicy="no-referrer" ${v.poster?`poster="${E(v.poster)}"`:""} src="${E(v.url)}"></video>`:`<small class="bad">${E(v.reason)}</small>`}</div>`).join("")+(IMP.verr?`<div class="bad">${E(IMP.verr)} Untick “Include video” to skip it, or press Publish to retry.</div>`:"")}
-async function impStore(kind,url){const r=await api("/api/import/media",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({kind,url})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Download failed (HTTP "+r.status+")");return d}
+let UNC=0;
+async function impStore(kind,url){const r=await api("/api/import/media",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({kind,url})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Download failed (HTTP "+r.status+")");if(d.cleaned===false)UNC++;return d}
 function frameUrl(u){return new Promise(res=>{const v=document.createElement("video");v.muted=true;v.playsInline=true;v.crossOrigin="anonymous";v.preload="auto";v.src=u;v.onloadeddata=()=>{v.currentTime=Math.min(1,(v.duration||2)/2)};v.onseeked=()=>{try{const s=Math.min(1,540/v.videoWidth),c=document.createElement("canvas");c.width=v.videoWidth*s;c.height=v.videoHeight*s;c.getContext("2d").drawImage(v,0,0,c.width,c.height);c.toBlob(b=>res(b?new File([b],"poster.jpg",{type:"image/jpeg"}):null),"image/jpeg",.8)}catch{res(null)}};v.onerror=()=>res(null);setTimeout(()=>res(null),12000)})}
 function nextId(){const n=items.map(p=>parseInt((p.id.match(/(\d+)$/)||[])[1])||0);return "RC-"+String(Math.max(0,...n)+1).padStart(3,"0")}
 async function impPublish(){if(impBusy||!IMP)return;
@@ -152,12 +153,12 @@ async function impPublish(){if(impBusy||!IMP)return;
    if(!poster){const f=await frameUrl(IMP.vstored);if(f){try{poster=(await send(f)).url}catch{}}}}
   const imgs=sel.map(x=>x.stored),orig=Number($("#iorig").value)||null,specs={};
   $("#ispecs").value.split("\n").forEach(l=>{const i=l.indexOf(":");if(i>0)specs[l.slice(0,i).trim()]=l.slice(i+1).trim()});
-  const P={id:nextId(),name,price,originalPrice:orig&&orig>price?orig:null,discount:orig&&orig>price?"₹"+(orig-price).toLocaleString("en-IN")+" OFF":"",category:$("#icat").value,isNew:$("#inew").checked,image:imgs[0]||"",images:imgs.slice(1),video:IMP.vinc?IMP.vstored:"",poster:IMP.vinc?poster:"",description:$("#idesc").value.trim(),specs,brand:$("#ibrand").value.trim(),sku:$("#isku").value.trim(),sourceUrl:IMP.sourceUrl};
+  const P={id:nextId(),name,price,originalPrice:orig&&orig>price?orig:null,discount:orig&&orig>price?"₹"+(orig-price).toLocaleString("en-IN")+" OFF":"",category:$("#icat").value,isNew:$("#inew").checked,image:imgs[0]||"",images:imgs.slice(1),video:IMP.vinc?IMP.vstored:"",poster:IMP.vinc?poster:"",description:$("#idesc").value.trim(),specs,brand:$("#ibrand").value.trim(),sku:$("#isku").value.trim(),sourceUrl:IMP.sourceUrl,sourceTerms:IMP.sourceTerms||[]};
   if(IMP.duplicate)P.id=IMP.duplicate.id;
   ilog([["Saving the product…"]]);
   const r=await api("/api/import/publish",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({product:P})});const d=await r.json().catch(()=>({}));
   if(!r.ok)return ilog([[d.error||"Could not save (HTTP "+r.status+")","bad"]]);
-  ilog([[`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`,"ok"]]);say("Published ✔");if(CUR){CUR.status="published"}CUR=null;IMP=null;$("#ipv").hidden=true;await load();reset();impBusy=false;qDraw();qNext(`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`)}
+  ilog([[`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`,"ok"]]);say("Published ✔");if(CUR){CUR.status="published"}CUR=null;IMP=null;$("#ipv").hidden=true;await load();reset();impBusy=false;qDraw();qNext(`Published “${d.product.name}” (${d.product.id}) ✔ It is now on your website.`+(UNC?` Note: hidden file info could not be cleaned from ${UNC} file(s) (unusual format). Logos or text drawn inside photos/videos are never removed, so check them yourself.`:" Logos or text drawn inside photos/videos are never removed, so check them yourself."));UNC=0}
  catch(e){ilog([["Something went wrong. Please try again.","bad"]])}
  finally{impBusy=false;$("#ipub").disabled=false;$("#ipub").textContent="Publish Product"}}
 </script></body></html>
