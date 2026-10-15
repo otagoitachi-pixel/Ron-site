@@ -140,7 +140,7 @@ async function impPublish(P,env){
  if(ex){let o={};try{o=JSON.parse(ex.data)}catch{}if(!src||o.sourceUrl!==src)throw new E('Product ID '+id+' is already used by another product.',409)}
  const specs={};for(const [k,v] of Object.entries(P.specs||{}).slice(0,40)){const kk=scrubText(String(k).slice(0,60),terms,C),vv=scrubText(String(v).slice(0,200),terms,C);if(kk&&vv)specs[kk]=vv}
  const orig=Number(P.originalPrice);
- const d={id,name,price,originalPrice:orig>price?orig:null,discount:String(P.discount||'').slice(0,40),category:String(P.category||'').slice(0,60),isNew:!!P.isNew,image:P.image||'',images:(P.images||[]).filter(Boolean),video:P.video||'',poster:P.poster||'',description:scrubText(String(P.description||'').slice(0,3000),terms,C),variants:[],specs,brand:scrubText(String(P.brand||'RON COLLECTION').slice(0,80),terms,C)||'RON COLLECTION',sku:String(P.sku||'').slice(0,80),sourceUrl:src,rating:null,reviewCount:0,reviews:[]};
+ const d={id,name,price,draft:!!P.draft,originalPrice:orig>price?orig:null,discount:String(P.discount||'').slice(0,40),category:String(P.category||'').slice(0,60),isNew:!!P.isNew,image:P.image||'',images:(P.images||[]).filter(Boolean),video:P.video||'',poster:P.poster||'',description:scrubText(String(P.description||'').slice(0,3000),terms,C),variants:[],specs,brand:scrubText(String(P.brand||'RON COLLECTION').slice(0,80),terms,C)||'RON COLLECTION',sku:String(P.sku||'').slice(0,80),sourceUrl:src,rating:null,reviewCount:0,reviews:[]};
  await env.DB.prepare('INSERT INTO products(id,data,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').bind(id,JSON.stringify(d),Date.now()).run();
  return {ok:1,product:d,scrubbed:C}}
 /* ===== Source privacy: nothing that points to the source website is published ===== */
@@ -243,14 +243,13 @@ async function sbPut(env,key,body,type){
 /* ===== end importer ===== */
 export default{async fetch(req,env){
 const u=new URL(req.url),p=u.pathname;
-if(p==='/tryon')return Response.redirect(u.origin+'/tryon/'+u.search, 308);
 const authed=()=>env.ADMIN_PASSWORD&&req.headers.get('x-admin-password')===env.ADMIN_PASSWORD;
 try{
 if(p==='/api/check')return authed()?J({ok:1}):J({error:'no'},401);
 if(p==='/api/products'){
  if(req.method==='GET'){const {results}=await env.DB.prepare('SELECT data FROM products ORDER BY created DESC').all();
-  const pub=[];for(const r of results){try{const o=JSON.parse(r.data);for(const k of PRIV)delete o[k];pub.push(o)}catch{}}
-  return new Response(JSON.stringify(pub),{headers:{'content-type':'application/json','cache-control':'no-store'}})}
+  const all=u.searchParams.get('all')==='1'&&authed(),pub=[];for(const r of results){try{const o=JSON.parse(r.data);if(o.draft&&!all)continue;for(const k of PRIV)delete o[k];pub.push(o)}catch{}}
+  return new Response(JSON.stringify(pub),{headers:{'content-type':'application/json','cache-control':'no-store','x-catalog':results.length?'1':'0'}})}
  if(!authed())return J({error:'Wrong password'},401);
  if(req.method==='POST'){const d=await req.json();if(!d.id||!d.name)return J({error:'ID and name required'},400);
   const prev=await env.DB.prepare('SELECT data FROM products WHERE id=?').bind(d.id).first();
@@ -286,14 +285,14 @@ if(p.startsWith('/media/')){
  return new Response(up.body,{status:up.status,headers:h})}
 }catch(e){if(e instanceof E)return J({error:e.message},e.status||400);return J({error:'Server error. Please try again.'},500)}
 if(p==='/robots.txt')return new Response('User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: '+u.origin+'/sitemap.xml\n',{headers:{'content-type':'text/plain'}});
-if(p==='/sitemap.xml'){let lm='';try{const {results}=await env.DB.prepare('SELECT MAX(created) m FROM products').all();if(results&&results[0]&&results[0].m)lm='<lastmod>'+new Date(results[0].m).toISOString().slice(0,10)+'</lastmod>'}catch{}
+if(p==='/sitemap.xml'){let lm='';try{const {results}=await env.DB.prepare("SELECT MAX(created) m FROM products WHERE COALESCE(json_extract(data,'$.draft'),0)=0").all();if(results&&results[0]&&results[0].m)lm='<lastmod>'+new Date(results[0].m).toISOString().slice(0,10)+'</lastmod>'}catch{}
  return new Response('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>'+u.origin+'/</loc>'+lm+'<changefreq>weekly</changefreq><priority>1.0</priority></url></urlset>',{headers:{'content-type':'application/xml'}})}
 if((p==='/'||p==='/index.html')&&req.method==='GET'){
  const res=await env.ASSETS.fetch(new Request(u.origin+'/',{headers:req.headers}));
  if(res.ok&&(res.headers.get('content-type')||'').includes('html'))try{
   let html=await res.text();const O=u.origin,abs=x=>x?(/^https?:/.test(x)?x:O+(x.startsWith('/')?x:'/'+x)):undefined;
   const {results}=await env.DB.prepare('SELECT data FROM products ORDER BY created DESC').all();const L=[];
-  for(const r of results){try{const o=JSON.parse(r.data);if(!o.name||!(o.price>0))continue;
+  for(const r of results){try{const o=JSON.parse(r.data);if(!o.name||!(o.price>0)||o.draft)continue;
    const pr={'@type':'Product',name:o.name,sku:o.id,image:[o.image,...(o.images||[])].filter(Boolean).map(abs),brand:{'@type':'Brand',name:'RON COLLECTION'},offers:{'@type':'Offer',url:O+'/',priceCurrency:'INR',price:String(o.price)}};
    if(o.description)pr.description=String(o.description).slice(0,300);L.push(pr)}catch{}}
   const ld=[{'@context':'https://schema.org','@type':'Organization',name:'RON COLLECTION',url:O+'/',logo:O+'/images/logo.png'},{'@context':'https://schema.org','@type':'WebSite',name:'RON COLLECTION',url:O+'/'}];

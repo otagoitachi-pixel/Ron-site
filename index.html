@@ -137,11 +137,6 @@ dialog{max-height:90dvh}
 }
 @media(min-width:1100px){.grid{grid-template-columns:repeat(4,1fr)}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
-
-/* Virtual watch try-on */
-.tryon-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;margin:10px 0 14px;padding:13px 16px;border:1px solid #a8802f;border-radius:12px;background:#17130e;color:#f7f0e3;font:700 14px/1.2 Manrope,system-ui,sans-serif;text-decoration:none;cursor:pointer}
-.tryon-btn:hover{background:#30271a}
-.tryon-note{font-size:11px;color:#766c5b;margin:-7px 0 12px}
 </style>
 </head>
 <body>
@@ -322,8 +317,6 @@ function detail(id) {
     <div class="cat">${esc(p.category)}</div>
     <h2>${esc(p.name)}</h2>
     ${priceHTML}
-    <a class="tryon-btn" href="/tryon/?watch=${encodeURIComponent(p.id)}&amp;name=${encodeURIComponent(p.name)}">⌚ Try It On — Open Camera</a>
-    <p class="tryon-note">Uses a sample 3D watch model. The preview may not exactly match this product.</p>
     <div style="color:#6d665a;font-size:13px">Product ID: ${esc(p.id)}</div>
     ${head}
     ${p.variants && p.variants.length ? `<label style="font-size:13px">Variant<select id="vs">${p.variants.map(v => `<option>${esc(v)}</option>`).join("")}</select></label>` : ""}
@@ -342,7 +335,7 @@ dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
 
 render();
 /* If the admin panel is set up, watches saved there replace the list above */
-fetch("/api/products",{cache:"no-store"}).then(r=>r.ok?r.json():[]).then(d=>{if(Array.isArray(d)&&d.length){PRODUCTS=d;render()}}).catch(()=>{});
+fetch("/api/products",{cache:"no-store"}).then(r=>r.ok?r.json().then(d=>[d,r.headers.get("x-catalog")=="1"]):[[],false]).then(([d,has])=>{if(Array.isArray(d)&&(d.length||has)){PRODUCTS=d;render()}}).catch(()=>{});
 </script>
 </body>
 </html>
