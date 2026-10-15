@@ -124,6 +124,15 @@
         max-width: 50vw;
       }
 
+      #tryonError {
+        display: none; position: fixed; inset: 0; z-index: 20; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px; padding: 28px; text-align: center;
+        background: rgba(15,13,10,.94); color: #f7f0e3; font-size: 17px; line-height: 1.5;
+      }
+      #tryonError p { max-width: 420px; margin: 0; }
+      #tryonError button, #tryonError a { border: 0; border-radius: 999px; padding: 13px 22px; font-size: 15px; font-weight: 700;
+        background: #e0bd76; color: #17130e; text-decoration: none; cursor: pointer; }
+
       #changeCamera {
         display: none;
         position: fixed;
@@ -145,6 +154,12 @@
       <a href="/#watches">← Back to watches</a>
     </header>
     <div id="ronProduct">Virtual try-on preview · Sample Casio 3D model · Appearance may differ from the selected product</div>
+
+    <div id='tryonError'>
+      <p></p>
+      <button onclick="location.reload()">Try again</button>
+      <a href="/#watches">Back to watches</a>
+    </div>
 
     <!-- loading modal: -->
     <div id='loading' class='modal'>

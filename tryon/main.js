@@ -72,6 +72,28 @@ const _states = {
 };
 let _state = _states.notLoaded;
 let _isInstructionsHidden = false;
+let _loadingTimer = null;
+
+const _errorMessages = {
+  WEBCAM_UNAVAILABLE: 'We could not start your camera. Please tap Allow when your browser asks for camera access (check the lock icon in the address bar if you blocked it earlier), close any other app using the camera, then try again.',
+  MEDIASTREAMAPI_NOTFOUND: 'Camera access is not available in this browser. Please open this page directly in Chrome (Android) or Safari (iPhone) \u2014 not inside Instagram, Facebook or WhatsApp \u2014 and make sure the address starts with https://.',
+  GL_INCOMPATIBLE: 'Your browser or device does not support the 3D graphics (WebGL) needed for try-on. Please try Chrome or Safari, and update your browser.',
+  FALLBACK: 'Try-on could not start on this device. Please try again in Chrome or Safari.',
+  TIMEOUT: 'Try-on is taking too long to load. Please check your internet connection and try again.'
+};
+
+function show_error(err){
+  console.error('Try-on error:', err);
+  if (_loadingTimer){ clearTimeout(_loadingTimer); _loadingTimer = null; }
+  const code = (typeof err === 'string') ? err : ((err && err.name === 'NotAllowedError') ? 'WEBCAM_UNAVAILABLE' : 'FALLBACK');
+  const msg = _errorMessages[code] || _errorMessages.FALLBACK;
+  const box = document.getElementById('tryonError');
+  if (!box) return;
+  box.querySelector('p').textContent = msg;
+  box.style.display = 'flex';
+  const l = document.getElementById('loading'); if (l) l.style.display = 'none';
+  const i = document.getElementById('instructions'); if (i) i.style.display = 'none';
+}
 
 
 function setFullScreen(cv){
@@ -86,6 +108,18 @@ function setFullScreen(cv){
 // entry point:
 function main(){
   _state = _states.loading;
+
+  // pre-flight checks so the visitor gets a clear message instead of an endless loading screen:
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    show_error('MEDIASTREAMAPI_NOTFOUND');
+    return;
+  }
+  // safety net: if nothing is ready after 60s (very slow network), say so
+  _loadingTimer = setTimeout(function(){
+    if (document.getElementById('loading')){
+      show_error('TIMEOUT');
+    }
+  }, 60000);
 
   // get canvases and size them:
   const handTrackerCanvas = document.getElementById('handTrackerCanvas');
@@ -110,7 +144,7 @@ function main(){
     stabilizerOptions: VTOModeSettings.stabilizerOptions,
     objectPointsPositionFactors: VTOModeSettings.objectPointsPositionFactors,
     poseLandmarksLabels: VTOModeSettings.poseLandmarksLabels,
-    poseFilter: null,
+    poseFilter: VTOModeSettings.isPoseFilter ? PoseFlipFilter.instance({}) : null,
     NNsPaths: VTOModeSettings.NNsPaths,
     threshold: VTOModeSettings.threshold,
     callbackTrack: callbackTrack,
@@ -121,7 +155,7 @@ function main(){
     handTrackerCanvas: handTrackerCanvas,
     debugDisplayLandmarks: _settings.debugDisplayLandmarks,
   }).then(start).catch(function(err){
-    throw new Error(err);
+    show_error(err);
   });
 } 
 
@@ -188,6 +222,8 @@ function load_model(modelId, threeLoadingManager){
 
     _state = _states.running;
 
+  }, undefined, function(err){
+    show_error('FALLBACK');
   });
 }
 
@@ -199,6 +235,7 @@ function start(three){
 
   three.loadingManager.onLoad = function(){
     console.log('INFO in main.js: All THREE.js stuffs are loaded');
+    if (_loadingTimer){ clearTimeout(_loadingTimer); _loadingTimer = null; }
     hide_loading();
     _state = _states.running;
   }

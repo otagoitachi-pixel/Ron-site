@@ -243,6 +243,7 @@ async function sbPut(env,key,body,type){
 /* ===== end importer ===== */
 export default{async fetch(req,env){
 const u=new URL(req.url),p=u.pathname;
+if(p==='/tryon')return Response.redirect(u.origin+'/tryon/'+u.search, 308);
 const authed=()=>env.ADMIN_PASSWORD&&req.headers.get('x-admin-password')===env.ADMIN_PASSWORD;
 try{
 if(p==='/api/check')return authed()?J({ok:1}):J({error:'no'},401);
