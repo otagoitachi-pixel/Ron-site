@@ -125,13 +125,13 @@ async function impMedia(b,env){const kind=b.kind==='video'?'video':'image';
  return {url:'/media/'+key,type:kind,size:bytes.length,cleaned}}
 async function impPublish(P,env){
  if(!P||typeof P!=='object')throw new E('Missing product data.');
- const id=String(P.id||'').trim(),price=Number(P.price);
+ const id=String(P.id||'').trim(),draft=!!P.draft,price=Number(P.price)||0;
  if(!/^[\w-]{1,40}$/.test(id))throw new E('Invalid product ID.');
  let terms=[];try{if(P.sourceUrl)terms=sourceTerms(checkUrl(P.sourceUrl),null,P.sourceTerms)}catch{}
  const C={links:0,contacts:0,names:0};
  const name=scrubText(String(P.name||'').trim(),terms,C);
- if(!name||name.length>200)throw new E('Product name is required (max 200 characters). Source website names and links are removed automatically, so the name may have become empty.');
- if(!(price>0)||price>1e7)throw new E('Enter your selling price in ₹.');
+ if((!name&&!draft)||name.length>200)throw new E('Product name is required (max 200 characters). Source website names and links are removed automatically, so the name may have become empty.');
+ if((!draft&&!(price>0))||price>1e7||price<0)throw new E('Enter your selling price in ₹.');
  const okm=u=>typeof u==='string'&&/^\/media\/[\w.-]+$/.test(u);
  if([P.image,...(P.images||[])].filter(Boolean).some(u=>!okm(u))||(P.video&&!okm(P.video))||(P.poster&&!okm(P.poster)))throw new E('All media must be stored in your own storage before publishing.');
  const src=P.sourceUrl?normSrc(checkUrl(P.sourceUrl).href):'';
@@ -140,7 +140,7 @@ async function impPublish(P,env){
  if(ex){let o={};try{o=JSON.parse(ex.data)}catch{}if(!src||o.sourceUrl!==src)throw new E('Product ID '+id+' is already used by another product.',409)}
  const specs={};for(const [k,v] of Object.entries(P.specs||{}).slice(0,40)){const kk=scrubText(String(k).slice(0,60),terms,C),vv=scrubText(String(v).slice(0,200),terms,C);if(kk&&vv)specs[kk]=vv}
  const orig=Number(P.originalPrice);
- const d={id,name,price,draft:!!P.draft,originalPrice:orig>price?orig:null,discount:String(P.discount||'').slice(0,40),category:String(P.category||'').slice(0,60),isNew:!!P.isNew,image:P.image||'',images:(P.images||[]).filter(Boolean),video:P.video||'',poster:P.poster||'',description:scrubText(String(P.description||'').slice(0,3000),terms,C),variants:[],specs,brand:scrubText(String(P.brand||'RON COLLECTION').slice(0,80),terms,C)||'RON COLLECTION',sku:String(P.sku||'').slice(0,80),sourceUrl:src,rating:null,reviewCount:0,reviews:[]};
+ const d={id,name,price,draft,originalPrice:orig>price?orig:null,discount:String(P.discount||'').slice(0,40),category:String(P.category||'').slice(0,60),isNew:!!P.isNew,image:P.image||'',images:(P.images||[]).filter(Boolean),video:P.video||'',poster:P.poster||'',description:scrubText(String(P.description||'').slice(0,3000),terms,C),variants:[],specs,brand:scrubText(String(P.brand||'RON COLLECTION').slice(0,80),terms,C)||'RON COLLECTION',sku:String(P.sku||'').slice(0,80),sourceUrl:src,rating:null,reviewCount:0,reviews:[]};
  await env.DB.prepare('INSERT INTO products(id,data,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').bind(id,JSON.stringify(d),Date.now()).run();
  return {ok:1,product:d,scrubbed:C}}
 /* ===== Source privacy: nothing that points to the source website is published ===== */
@@ -241,24 +241,98 @@ async function sbPut(env,key,body,type){
  const r=await fetch(base+'/storage/v1/object/'+(env.SUPABASE_BUCKET||'ron-media')+'/'+key,{method:'POST',headers:{authorization:'Bearer '+env.SUPABASE_SERVICE_KEY,apikey:env.SUPABASE_SERVICE_KEY,'content-type':type||'application/octet-stream','x-upsert':'true','cache-control':'max-age=31536000'},body});
  if(!r.ok)throw new E('Storage upload failed (HTTP '+r.status+').',502)}
 /* ===== end importer ===== */
-export default{async fetch(req,env){
-const u=new URL(req.url),p=u.pathname;
-const authed=()=>env.ADMIN_PASSWORD&&req.headers.get('x-admin-password')===env.ADMIN_PASSWORD;
+/* ===== Admin security: signed sessions, lockout, optional 2FA, rate limits, headers ===== */
+const enc=new TextEncoder(),TTL=3*3600*1000;
+const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const unb64u=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+const sha=async s=>new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(s)));
+const ctEq=(a,b)=>{if(a.length!==b.length)return false;let d=0;for(let i=0;i<a.length;i++)d|=a[i]^b[i];return d===0};
+const sameSecret=async(x,y)=>ctEq(await sha('c|'+x),await sha('c|'+y));
+let READY;
+function initDb(env){return READY||(READY=env.DB.batch([
+ env.DB.prepare('CREATE TABLE IF NOT EXISTS rl(k TEXT PRIMARY KEY,w INTEGER,n INTEGER)'),
+ env.DB.prepare('CREATE TABLE IF NOT EXISTS lk(ip TEXT PRIMARY KEY,fails INTEGER,until INTEGER,strikes INTEGER,last INTEGER)'),
+ env.DB.prepare('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v TEXT)')]).catch(e=>{READY=null;throw e}))}
+const clientIp=req=>{const ip=req.headers.get('cf-connecting-ip')||'unknown';return ip.includes(':')?ip.split(':').slice(0,4).join(':'):ip};
+async function hit(env,key,limit,sec){await initDb(env);const w=Math.floor(Date.now()/(sec*1000));
+ const r=await env.DB.prepare('INSERT INTO rl(k,w,n) VALUES(?,?,1) ON CONFLICT(k) DO UPDATE SET n=CASE WHEN w=excluded.w THEN n+1 ELSE 1 END,w=excluded.w RETURNING n').bind(key,w).first();
+ return !!r&&r.n<=limit}
+const hkey=async env=>crypto.subtle.importKey('raw',await sha('ron-admin-v1|'+env.ADMIN_PASSWORD+'|'+(env.SESSION_SECRET||'')),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);
+async function mint(env){const iat=Date.now(),body=b64u(enc.encode(JSON.stringify({iat,exp:iat+TTL,n:crypto.randomUUID()})));
+ return body+'.'+b64u(await crypto.subtle.sign('HMAC',await hkey(env),enc.encode(body)))}
+async function checkTok(env,tok){try{if(!env.ADMIN_PASSWORD||!tok)return false;const [body,sig]=String(tok).split('.');if(!body||!sig)return false;
+ if(!await crypto.subtle.verify('HMAC',await hkey(env),unb64u(sig),enc.encode(body)))return false;
+ const o=JSON.parse(new TextDecoder().decode(unb64u(body)));if(!(o.exp>Date.now()))return false;
+ await initDb(env);const va=await env.DB.prepare("SELECT v FROM kv WHERE k='valid_after'").first();return !(va&&o.iat<=Number(va.v))}catch{return false}}
+function b32(s){const A='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';let bits='';for(const c of String(s).toUpperCase().replace(/[^A-Z2-7]/g,''))bits+=A.indexOf(c).toString(2).padStart(5,'0');const o=[];for(let i=0;i+8<=bits.length;i+=8)o.push(parseInt(bits.slice(i,i+8),2));return new Uint8Array(o)}
+async function totp(secret,step){const k=await crypto.subtle.importKey('raw',b32(secret),{name:'HMAC',hash:'SHA-1'},false,['sign']);const c=new Uint8Array(8);new DataView(c.buffer).setBigUint64(0,BigInt(step));
+ const h=new Uint8Array(await crypto.subtle.sign('HMAC',k,c)),o=h[19]&15,n=(((h[o]&127)<<24)|(h[o+1]<<16)|(h[o+2]<<8)|h[o+3])%1e6;return String(n).padStart(6,'0')}
+async function totpOk(env,code){code=String(code||'').replace(/\s/g,'');if(!/^\d{6}$/.test(code))return false;const now=Math.floor(Date.now()/30000);let good=0;
+ for(const d of [0,-1,1])if(await totp(env.ADMIN_TOTP_SECRET,now+d)===code)good=now+d;
+ if(!good)return false;const last=await env.DB.prepare("SELECT v FROM kv WHERE k='totp_last'").first();if(last&&Number(last.v)>=good)return false;
+ await env.DB.prepare("INSERT INTO kv(k,v) VALUES('totp_last',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(String(good)).run();return true}
+async function login(req,env,ip){
+ if(!env.ADMIN_PASSWORD)return J({error:'Admin is not set up yet.'},503);
+ await initDb(env);const now=Date.now();let row=await env.DB.prepare('SELECT * FROM lk WHERE ip=?').bind(ip).first();
+ if(row&&row.until>now)return J({error:'Too many wrong attempts. Try again in '+Math.ceil((row.until-now)/60000)+' minute(s).',retryAfter:Math.ceil((row.until-now)/1000)},429);
+ if(!await hit(env,'login:'+ip,30,3600))return J({error:'Too many attempts from this network. Try again later.'},429);
+ let b={};try{b=await req.json()}catch{}
+ const okPw=await sameSecret(String(b.password||'').slice(0,200),env.ADMIN_PASSWORD),ok2=env.ADMIN_TOTP_SECRET?await totpOk(env,b.code):true;
+ if(okPw&&ok2){await env.DB.prepare('DELETE FROM lk WHERE ip=?').bind(ip).run();
+  return J({ok:1,token:await mint(env),expiresIn:TTL/1000,weak:env.ADMIN_PASSWORD.length<12,twofa:!!env.ADMIN_TOTP_SECRET})}
+ await new Promise(r=>setTimeout(r,600));
+ let fails=(row&&row.last>now-86400000?row.fails:0)+1,strikes=row&&row.last>now-86400000?row.strikes:0,until=0;
+ if(fails>=5){strikes++;fails=0;until=now+Math.min(15*60000*2**(strikes-1),86400000)}
+ await env.DB.prepare('INSERT INTO lk(ip,fails,until,strikes,last) VALUES(?,?,?,?,?) ON CONFLICT(ip) DO UPDATE SET fails=excluded.fails,until=excluded.until,strikes=excluded.strikes,last=excluded.last').bind(ip,fails,until,strikes,now).run();
+ return J(until?{error:'Too many wrong attempts. Locked for '+Math.ceil((until-now)/60000)+' minute(s).',retryAfter:Math.ceil((until-now)/1000)}:{error:'Wrong password or code. '+(5-fails)+' attempt(s) left before a lock.'},until?429:401)}
+const MEDIA_OK=u=>typeof u==='string'&&/^(\/media\/[\w.-]{1,80}|(images|videos)\/[\w.-]{1,80})$/.test(u);
+const SIMPLE=(s,n)=>String(s==null?'':s).slice(0,n);
+function cleanProduct(d){
+ const id=SIMPLE(d.id,40);if(!/^[\w-]{1,40}$/.test(id))throw new E('Invalid product ID (letters, numbers, - and _ only).');
+ const draft=!!d.draft,price=Number(d.price)||0,orig=Number(d.originalPrice)||null;
+ if(price<0||price>1e7||(orig&&orig>1e8))throw new E('Price is out of range.');
+ const imgs=[d.image,...(Array.isArray(d.images)?d.images:[])].filter(Boolean);
+ if(imgs.length>20)throw new E('Too many photos (max 20).');
+ if(imgs.some(u=>!MEDIA_OK(u))||(d.video&&!MEDIA_OK(d.video))||(d.poster&&!MEDIA_OK(d.poster)))throw new E('Photos and videos must be files uploaded through this admin.');
+ const specs={};for(const [k,v] of Object.entries(d.specs&&typeof d.specs==='object'?d.specs:{}).slice(0,40)){const kk=SIMPLE(k,60),vv=SIMPLE(v,200);if(kk&&vv)specs[kk]=vv}
+ const o={id,name:SIMPLE(d.name,200).trim(),price,originalPrice:orig>price?orig:null,discount:SIMPLE(d.discount,40),category:SIMPLE(d.category,60),isNew:!!d.isNew,draft,
+  image:d.image||'',images:Array.isArray(d.images)?d.images.filter(Boolean):[],video:d.video||'',poster:d.poster||'',description:SIMPLE(d.description,3000),
+  variants:(Array.isArray(d.variants)?d.variants:[]).slice(0,20).map(x=>SIMPLE(x,40)).filter(Boolean),specs,
+  rating:d.rating==null?null:Math.min(5,Math.max(0,Number(d.rating)||0)),reviewCount:Math.max(0,Math.min(1e6,Number(d.reviewCount)||0)),
+  reviews:(Array.isArray(d.reviews)?d.reviews:[]).slice(0,50).map(r=>({name:SIMPLE(r&&r.name,80),rating:Math.min(5,Math.max(0,Number(r&&r.rating)||0)),text:SIMPLE(r&&r.text,1000),date:SIMPLE(r&&r.date,20),verified:!!(r&&r.verified)}))};
+ for(const k of PRIV)if(d[k]!==undefined&&d[k]!==null)o[k]=typeof d[k]==='string'?SIMPLE(d[k],500):(JSON.stringify(d[k]).length<4000?d[k]:undefined);
+ if(!o.name&&!draft)throw new E('ID and name required');if(!draft&&!(price>0))throw new E('Price required to publish');return o}
+const CSP="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'";
+function secure(res,p){const h=new Headers(res.headers);h.set('X-Content-Type-Options','nosniff');h.set('X-Frame-Options','SAMEORIGIN');h.set('Referrer-Policy','strict-origin-when-cross-origin');
+ h.set('Permissions-Policy','camera=(), microphone=(), geolocation=(), payment=(), usb=()');h.set('Strict-Transport-Security','max-age=31536000; includeSubDomains');h.set('Cross-Origin-Opener-Policy','same-origin');
+ if((h.get('content-type')||'').includes('text/html'))h.set('Content-Security-Policy',CSP);
+ if(p==='/admin.html'||p==='/admin'||p.startsWith('/api/')){h.set('X-Robots-Tag','noindex, nofollow');h.set('Cache-Control','no-store')}
+ return new Response(res.body,{status:res.status,statusText:res.statusText,headers:h})}
+async function handle(req,env){
+const u=new URL(req.url),p=u.pathname,ip=clientIp(req);
+let _au;const authed=async()=>{if(_au===undefined){const h=req.headers.get('authorization')||'';_au=/^Bearer /i.test(h)?await checkTok(env,h.slice(7).trim()):false}return _au};
+const need=async(kind,limit,sec)=>{if(!await authed())return J({error:'Please log in again.',login:1},401);if(!await hit(env,kind+':'+ip,limit,sec))return J({error:'Too many requests. Please slow down and try again in a minute.'},429);return null};
 try{
-if(p==='/api/check')return authed()?J({ok:1}):J({error:'no'},401);
+if(p==='/api/auth-info')return J({twofa:!!env.ADMIN_TOTP_SECRET,ready:!!env.ADMIN_PASSWORD});
+if(p==='/api/login'&&req.method==='POST')return await login(req,env,ip);
+if(p==='/api/logout'&&req.method==='POST'){if(await authed()){await initDb(env);await env.DB.prepare("INSERT INTO kv(k,v) VALUES('valid_after',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(String(Date.now())).run()}return J({ok:1})}
+if(p==='/api/check')return await authed()?J({ok:1}):J({error:'no'},401);
 if(p==='/api/products'){
  if(req.method==='GET'){const {results}=await env.DB.prepare('SELECT data FROM products ORDER BY created DESC').all();
-  const all=u.searchParams.get('all')==='1'&&authed(),pub=[];for(const r of results){try{const o=JSON.parse(r.data);if(o.draft&&!all)continue;for(const k of PRIV)delete o[k];pub.push(o)}catch{}}
+  const all=u.searchParams.get('all')==='1'&&await authed(),pub=[];for(const r of results){try{const o=JSON.parse(r.data);if(o.draft&&!all)continue;for(const k of PRIV)delete o[k];pub.push(o)}catch{}}
   return new Response(JSON.stringify(pub),{headers:{'content-type':'application/json','cache-control':'no-store','x-catalog':results.length?'1':'0'}})}
- if(!authed())return J({error:'Wrong password'},401);
- if(req.method==='POST'){const d=await req.json();if(!d.id||!d.name)return J({error:'ID and name required'},400);
-  const prev=await env.DB.prepare('SELECT data FROM products WHERE id=?').bind(d.id).first();
-  if(prev){try{const o=JSON.parse(prev.data);for(const k of PRIV)if(o[k]!==undefined&&d[k]===undefined)d[k]=o[k]}catch{}}
-  await env.DB.prepare('INSERT INTO products(id,data,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').bind(d.id,JSON.stringify(d),Date.now()).run();return J({ok:1})}
- if(req.method==='DELETE'){await env.DB.prepare('DELETE FROM products WHERE id=?').bind(u.searchParams.get('id')).run();return J({ok:1})}
+ {const bad=await need('wr',150,600);if(bad)return bad}
+ if(req.method==='POST'){let d;try{d=await req.json()}catch{return J({error:'Bad request'},400)}if(!d||typeof d!=='object')return J({error:'Bad request'},400);
+  const prev=await env.DB.prepare('SELECT data FROM products WHERE id=?').bind(String(d.id||'')).first();
+  if(prev){try{const o=JSON.parse(prev.data);for(const k of PRIV)if(o[k]!==undefined&&d[k]===undefined)d[k]=o[k]}
+   catch{}}
+  else{const c=await env.DB.prepare('SELECT COUNT(*) n FROM products').first();if(c&&c.n>=500)return J({error:'Limit reached: 500 products. Delete some first.'},400)}
+  const o=cleanProduct(d);
+  await env.DB.prepare('INSERT INTO products(id,data,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').bind(o.id,JSON.stringify(o),Date.now()).run();return J({ok:1})}
+ if(req.method==='DELETE'){await env.DB.prepare('DELETE FROM products WHERE id=?').bind(String(u.searchParams.get('id')||'').slice(0,40)).run();return J({ok:1})}
 }
 if(p.startsWith('/api/import/')){
- if(!authed())return J({error:'Wrong password'},401);
+ {const bad=await need('imp',p==='/api/import/media'?200:60,600);if(bad)return bad}
  if(req.method!=='POST')return J({error:'Method not allowed'},405);
  try{const b=await req.json().catch(()=>({}));
   if(p==='/api/import/preview')return J(await impPreview(b.url,env));
@@ -267,12 +341,14 @@ if(p.startsWith('/api/import/')){
   return J({error:'Not found'},404)}
  catch(e){if(e instanceof E)return J({error:e.message},e.status||400);return J({error:'Import failed unexpectedly. Please try again.'},500)}}
 if(p==='/api/upload'&&req.method==='POST'){
- if(!authed())return J({error:'Wrong password'},401);
- const f=(await req.formData()).get('file');
- const ext=((f.name.split('.').pop()||'bin')).toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,5)||'bin';
- const key=crypto.randomUUID()+'.'+ext;
- if(f.size>45e6)return J({error:'File too large (max 45 MB)'},413);await sbPut(env,key,await f.arrayBuffer(),f.type);
- return J({url:'/media/'+key,type:f.type.startsWith('video')?'video':'image'})}
+ {const bad=await need('up',60,600);if(bad)return bad}
+ let f;try{f=(await req.formData()).get('file')}catch{return J({error:'Bad upload'},400)}
+ if(!f||typeof f.arrayBuffer!=='function')return J({error:'No file received'},400);
+ const T={'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/avif':'avif','video/mp4':'mp4','video/webm':'webm','video/quicktime':'mov'},ext=T[f.type];
+ if(!ext)return J({error:'Only photos (JPG, PNG, WebP, GIF, AVIF) and videos (MP4, WebM, MOV) are allowed.'},415);
+ const isV=f.type.startsWith('video/');if(f.size>(isV?45e6:12e6))return J({error:isV?'Video too large (max 45 MB)':'Photo too large (max 12 MB)'},413);
+ const key=crypto.randomUUID()+'.'+ext;await sbPut(env,key,await f.arrayBuffer(),f.type);
+ return J({url:'/media/'+key,type:isV?'video':'image'})}
 if(p.startsWith('/media/')){
  const base=(env.SUPABASE_URL||'').replace(/\/$/,'');
  if(!/^\/media\/[\w.-]+$/.test(p))return new Response('Not found',{status:404});
@@ -281,7 +357,8 @@ if(p.startsWith('/media/')){
  const up=await fetch(base+'/storage/v1/object/public/'+(env.SUPABASE_BUCKET||'ron-media')+'/'+p.slice(7),{headers:rg?{range:rg}:{}});
  if(!up.ok)return new Response('Not found',{status:404});
  const h=new Headers();for(const k of ['content-type','content-length','content-range','accept-ranges','etag'])if(up.headers.get(k))h.set(k,up.headers.get(k));
- h.set('cache-control','public,max-age=31536000,immutable');
+ h.set('cache-control','public,max-age=31536000,immutable');h.set('x-content-type-options','nosniff');
+ if(!/^(image|video)\//.test(h.get('content-type')||''))h.set('content-type','application/octet-stream');
  return new Response(up.body,{status:up.status,headers:h})}
 }catch(e){if(e instanceof E)return J({error:e.message},e.status||400);return J({error:'Server error. Please try again.'},500)}
 if(p==='/robots.txt')return new Response('User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: '+u.origin+'/sitemap.xml\n',{headers:{'content-type':'text/plain'}});
@@ -300,6 +377,7 @@ if((p==='/'||p==='/index.html')&&req.method==='GET'){
   const first=(L[0]&&L[0].image&&L[0].image[0])||O+'/images/logo.png';
   const inj='<link rel="canonical" href="'+O+'/"><meta property="og:url" content="'+O+'/">'+(first?'<meta property="og:image" content="'+first+'"><meta name="twitter:image" content="'+first+'">':'')+'<script type="application/ld+json">'+JSON.stringify(ld).replace(/</g,'\\u003c')+'</script>';
   const h=new Headers(res.headers);h.delete('content-length');h.delete('etag');h.set('cache-control','public,max-age=300');
-  return new Response(html.replace('</head>',inj+'</head>'),{status:200,headers:h})}catch{}
+  return new Response(html.replace('</head>',()=>inj+'</head>'),{status:200,headers:h})}catch{}
  return env.ASSETS.fetch(req)}
-return env.ASSETS.fetch(req)}}
+return env.ASSETS.fetch(req)}
+export default{async fetch(req,env){let r;try{r=await handle(req,env)}catch{r=new Response('Server error',{status:500})}return secure(r,new URL(req.url).pathname)}}
